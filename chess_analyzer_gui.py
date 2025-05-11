@@ -41,10 +41,11 @@ class ChessAnalyzerApp:
             self.capture_sound = pygame.mixer.Sound(os.path.join(SOUND_DIR, "capture.wav"))
             self.sound_enabled = True
         except Exception as e:
-            print(f"Sound init error: {e}")
             self.sound_enabled = False
             self.move_sound = None
             self.capture_sound = None
+            print(f"Sound init error: {e}")
+
 
         self.piece_images = {}
         self.current_game_node = None
@@ -88,7 +89,7 @@ class ChessAnalyzerApp:
                     self.piece_images[symbol] = None
         except Exception as e:
             messagebox.showerror("Asset Load Error", f"Critical asset error: {e}")
-            if self.engine: self.engine.quit_engine()
+            if self.engine and self.engine.process: self.engine.quit_engine()
             self.root.quit()
 
     def create_widgets(self):
@@ -136,7 +137,7 @@ class ChessAnalyzerApp:
         self.game_info_label = ttk.Label(self.info_panel, text="No game loaded", wraplength=INFO_PANEL_WIDTH - 10, justify=tk.LEFT)
         self.game_info_label.pack(anchor=tk.NW, pady=5, fill=tk.X)
 
-        ttk.Label(self.info_panel, text="Moves & Variations:", font=("Arial", 12, "bold")).pack(anchor=tk.W, pady=(10,0))
+        ttk.Label(self.info_panel, text="Moves:", font=("Arial", 12, "bold")).pack(anchor=tk.W, pady=(10,0))
         moves_frame = ttk.Frame(self.info_panel)
         moves_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         self.moves_scrollbar = ttk.Scrollbar(moves_frame, orient=tk.VERTICAL)
@@ -176,23 +177,22 @@ class ChessAnalyzerApp:
         rank = int(y // SQUARE_SIZE)
         if not self.board_orientation_white_pov:
             file = 7 - file
-            rank = 7 - rank
+            rank = 7 - rank 
         else:
             rank = 7 - rank 
-        
         if 0 <= file <= 7 and 0 <= rank <= 7:
             return chess.square(file, rank)
         return None
 
-    def update_board_display(self, move_to_animate=None, captured=False, is_reverse_animation=False):
+    def update_board_display(self, move_to_animate=None, captured=False, is_reverse_animation=False, animated_piece_symbol=None):
         if self.is_animating: return
         self.board_canvas.delete("piece")
         self.board_canvas.delete("arrow")
         self.clear_highlighted_squares()
 
-        if move_to_animate:
+        if move_to_animate and animated_piece_symbol:
             self.is_animating = True
-            self.animate_move(move_to_animate, captured, is_reverse_animation)
+            self.animate_move(move_to_animate, captured, is_reverse_animation, animated_piece_symbol)
         else:
             self._draw_all_pieces()
             self._draw_move_arrows()
@@ -215,27 +215,11 @@ class ChessAnalyzerApp:
         if self.best_move_from_engine and self.board_state.is_legal(self.best_move_from_engine):
             self.draw_arrow(self.best_move_from_engine.from_square, self.best_move_from_engine.to_square, color="green", width=4, tag="best_move_arrow")
 
-    def animate_move(self, move, captured, is_reverse_animation):
-        from_sq, to_sq = (move.to_square, move.from_square) if is_reverse_animation else (move.from_square, move.to_square)
+    def animate_move(self, move, captured, is_reverse_animation, piece_symbol):
+        from_sq_anim, to_sq_anim = (move.to_square, move.from_square) if is_reverse_animation else (move.from_square, move.to_square)
         
-        board_for_piece = self.current_game_node.parent.board() if is_reverse_animation else self.current_game_node.board()
-        piece_to_move = board_for_piece.piece_at(to_sq)
-
-        if not piece_to_move and move.promotion and not is_reverse_animation:
-             piece_to_move = chess.Piece(move.promotion, board_for_piece.turn if not board_for_piece.turn == chess.WHITE else chess.BLACK)
-        elif not piece_to_move and move.promotion and is_reverse_animation:
-             piece_to_move = chess.Piece(chess.PAWN, board_for_piece.turn)
-        elif not piece_to_move and self.board_state.is_castling(move):
-            king_sq = board_for_piece.king(not board_for_piece.turn)
-            piece_to_move = board_for_piece.piece_at(king_sq)
-
-        if not piece_to_move:
-            self._finalize_animation_and_update(move, captured, is_reverse_animation)
-            return
-
-        piece_symbol = piece_to_move.symbol()
-        start_x, start_y = self.get_square_coords(from_sq)
-        end_x, end_y = self.get_square_coords(to_sq)
+        start_x, start_y = self.get_square_coords(from_sq_anim)
+        end_x, end_y = self.get_square_coords(to_sq_anim)
 
         if piece_symbol not in self.piece_images or not self.piece_images[piece_symbol]:
             self._finalize_animation_and_update(move, captured, is_reverse_animation)
@@ -246,17 +230,31 @@ class ChessAnalyzerApp:
         self.board_canvas.tag_raise(self.animating_piece_id)
 
         self.board_canvas.delete("piece")
-        board_before_animation = self.current_game_node.parent.board() if not is_reverse_animation else self.current_game_node.board()
         
+        board_state_for_static_pieces = self.current_game_node.parent.board() if not is_reverse_animation and self.current_game_node.parent else self.board_state
+        if is_reverse_animation :
+             board_state_for_static_pieces = self.board_state
+        else:
+            if self.current_game_node and self.current_game_node.parent:
+                 board_state_for_static_pieces = self.current_game_node.parent.board()
+            else:
+                 board_state_for_static_pieces = chess.Board(self.board_state.fen())
+                 if self.board_state.move_stack:
+                     try:
+                        board_state_for_static_pieces.pop()
+                     except IndexError: pass
+
+
         for sq_idx in chess.SQUARES:
-            if sq_idx == from_sq: continue
-            piece_on_sq = board_before_animation.piece_at(sq_idx)
+            if sq_idx == from_sq_anim : continue 
+            
+            piece_on_sq = board_state_for_static_pieces.piece_at(sq_idx)
             if piece_on_sq:
-                symbol = piece_on_sq.symbol()
-                if symbol in self.piece_images and self.piece_images[symbol]:
+                symbol_static = piece_on_sq.symbol()
+                if symbol_static in self.piece_images and self.piece_images[symbol_static]:
                     x_static, y_static = self.get_square_coords(sq_idx)
-                    if not (captured and sq_idx == (move.to_square if not is_reverse_animation else move.from_square)):
-                         self.board_canvas.create_image(x_static, y_static, anchor=tk.NW, image=self.piece_images[symbol], tags=("piece", f"piece_at_{sq_idx}"))
+                    if not (not is_reverse_animation and captured and sq_idx == to_sq_anim):
+                         self.board_canvas.create_image(x_static, y_static, anchor=tk.NW, image=self.piece_images[symbol_static], tags=("piece", f"piece_at_{sq_idx}"))
         
         self._draw_move_arrows()
 
@@ -314,18 +312,40 @@ class ChessAnalyzerApp:
             self.moves_listbox.delete(0, tk.END)
             self.move_nodes_in_listbox = []
             
-            self._populate_moves_listbox(game, 0) 
+            game_start_node = game
+            self.moves_listbox.insert(tk.END, "--- Start ---")
+            self.move_nodes_in_listbox.append(game_start_node)
+
+            temp_b = game_start_node.board()
+            current_line_text = ""
+            for node in game_start_node.mainline():
+                if node.move is None: continue
+                
+                san = temp_b.san(node.move)
+                if temp_b.turn == chess.WHITE:
+                    if current_line_text:
+                        self.moves_listbox.insert(tk.END, current_line_text.strip())
+                    current_line_text = f"{temp_b.fullmove_number}. {san}"
+                else:
+                    current_line_text += f"  {san}"
+                
+                self.move_nodes_in_listbox.append(node)
+                temp_b.push(node.move)
+            
+            if current_line_text:
+                self.moves_listbox.insert(tk.END, current_line_text.strip())
 
             try:
                 idx_to_select = self.move_nodes_in_listbox.index(self.current_game_node)
+                self.moves_listbox.selection_clear(0, tk.END)
                 self.moves_listbox.selection_set(idx_to_select)
                 self.moves_listbox.see(idx_to_select)
-            except (ValueError, tk.TclError):
-                pass
+            except (ValueError, tk.TclError): pass
+
 
             if self.current_game_node.move:
-                san_move = self.current_game_node.parent.board().san(self.current_game_node.move)
-                self.current_move_label.config(text=san_move)
+                parent_board = self.current_game_node.parent.board() if self.current_game_node.parent else chess.Board()
+                self.current_move_label.config(text=parent_board.san(self.current_game_node.move))
             else:
                 self.current_move_label.config(text="Initial Position")
             
@@ -347,35 +367,6 @@ class ChessAnalyzerApp:
             self.game_status_label.config(text="")
             self.update_eval_bar(None, None)
             
-    def _populate_moves_listbox(self, node, depth):
-        indent = "  " * depth
-        prefix = ""
-        
-        if node.move:
-            board_before_move = node.parent.board()
-            san = board_before_move.san(node.move)
-            if board_before_move.turn == chess.WHITE: 
-                prefix = f"{board_before_move.fullmove_number}. "
-            listbox_text = f"{indent}{prefix}{san}"
-        elif depth == 0 : 
-             listbox_text = "--- Start ---"
-        else: 
-            listbox_text = f"{indent}(...)"
-            
-        self.moves_listbox.insert(tk.END, listbox_text)
-        self.move_nodes_in_listbox.append(node)
-
-        if node.variations: 
-            self._populate_moves_listbox(node.variation(0), depth +1)
-            
-            
-            
-            
-            
-            
-            
-
-
     def check_game_status(self):
         status_text, color = "", "blue"
         if self.board_state.is_checkmate():
@@ -387,7 +378,6 @@ class ChessAnalyzerApp:
         elif self.board_state.is_fivefold_repetition(): status_text = "Draw (5-fold repetition)."
         self.game_status_label.config(text=status_text, foreground=color)
 
-
     def update_eval_bar(self, score_cp, score_mate, max_eval_cp=1000):
         bar_width = self.eval_bar_canvas.winfo_width()
         if bar_width <= 1: bar_width = BOARD_IMG_WIDTH
@@ -398,8 +388,9 @@ class ChessAnalyzerApp:
             text_to_display = "M+" if self.board_state.turn == chess.BLACK else "M-"
         elif score_mate is not None:
             effective_mate_score = score_mate if self.board_state.turn == chess.WHITE else -score_mate
+            text_to_display_mate_val = score_mate if self.board_state.turn == chess.WHITE else -score_mate
+            text_to_display = f"M{'+' if text_to_display_mate_val > 0 else ''}{text_to_display_mate_val}"
             normalized_score = 1.0 if effective_mate_score > 0 else 0.0
-            text_to_display = f"M{'+' if effective_mate_score > 0 else ''}{score_mate}" if self.board_state.turn == chess.WHITE else f"M{'-' if effective_mate_score > 0 else ''}{-score_mate}"
 
         elif score_cp is not None:
             actual_score_cp = score_cp if self.board_state.turn == chess.WHITE else -score_cp
@@ -443,17 +434,14 @@ class ChessAnalyzerApp:
         if fen:
             try:
                 new_board = chess.Board(fen)
-                
                 game = chess.pgn.Game()
                 game.setup(new_board) 
                 self.current_game_node = game 
-                self.board_state = new_board 
-                
+                self.board_state = new_board
                 self._draw_all_pieces()
                 self._draw_move_arrows()
                 self.update_info_panel() 
                 self.update_navigation_buttons()
-                messagebox.showinfo("FEN Loaded", "FEN position loaded successfully.")
             except ValueError:
                 messagebox.showerror("FEN Error", "Invalid FEN string.")
 
@@ -464,57 +452,101 @@ class ChessAnalyzerApp:
         self.root.clipboard_append(fen)
         messagebox.showinfo("FEN Exported", "Current FEN copied to clipboard.")
 
-
-    def _navigate_to_node(self, target_node, is_forward_move=None, is_reverse_animation=False):
+    def _navigate_to_node(self, target_node, is_forward_move=None, is_reverse_animation=False, 
+                          move_to_animate_override=None, animated_piece_symbol_override=None):
         if self.is_animating or target_node is None: return
-        move_to_animate, captured = None, False
+        
+        move_to_animate = move_to_animate_override
+        animated_piece_symbol = animated_piece_symbol_override
+        captured = False
 
-        if is_forward_move is not None:
-            if is_forward_move and target_node.move:
-                move_to_animate = target_node.move
-                board_before_move = target_node.parent.board()
+        if move_to_animate:
+            if is_forward_move:
+                board_before_move = target_node.parent.board() if target_node.parent else chess.Board()
                 captured = board_before_move.is_capture(move_to_animate) or board_before_move.is_en_passant(move_to_animate)
-            elif not is_forward_move and self.current_game_node.move and is_reverse_animation: 
-                move_to_animate = self.current_game_node.move 
-                
-                captured = self.current_game_node.board().is_capture(chess.Move(move_to_animate.to_square, move_to_animate.from_square)) 
-
-
+        
         self.current_game_node = target_node
         self.board_state = self.current_game_node.board()
 
-        if move_to_animate:
-            self.update_board_display(move_to_animate=move_to_animate, captured=captured, is_reverse_animation=is_reverse_animation)
-        else:
-            self._draw_all_pieces()
-            self._draw_move_arrows()
-            self.update_info_panel()
-            self.update_navigation_buttons()
+        self.update_board_display(move_to_animate=move_to_animate, captured=captured, 
+                                  is_reverse_animation=is_reverse_animation, 
+                                  animated_piece_symbol=animated_piece_symbol)
             
     def next_move_action(self):
         if self.current_game_node and self.current_game_node.variations:
-            self._navigate_to_node(self.current_game_node.variation(0), is_forward_move=True)
+            target_node = self.current_game_node.variation(0)
+            move_to_animate = target_node.move
+            animated_piece_symbol = None
+            
+            piece_obj = target_node.board().piece_at(move_to_animate.to_square)
+            if piece_obj: animated_piece_symbol = piece_obj.symbol()
+            elif move_to_animate.promotion:
+                animated_piece_symbol = chess.Piece(move_to_animate.promotion, target_node.board().turn).symbol()
+            
+            self._navigate_to_node(target_node, is_forward_move=True, 
+                                   move_to_animate_override=move_to_animate, 
+                                   animated_piece_symbol_override=animated_piece_symbol)
 
     def prev_move_action(self):
         if self.current_game_node and self.current_game_node.parent is not None:
-             self._navigate_to_node(self.current_game_node.parent, is_forward_move=False, is_reverse_animation=True)
+            move_being_undone = self.current_game_node.move
+            target_node = self.current_game_node.parent
+            animated_piece_symbol = None
+
+            piece_obj = self.current_game_node.board().piece_at(move_being_undone.to_square)
+            if piece_obj: animated_piece_symbol = piece_obj.symbol()
+            elif move_being_undone.promotion:
+                 pawn_color = not target_node.board().turn 
+                 animated_piece_symbol = chess.Piece(chess.PAWN, pawn_color).symbol()
+
+            self._navigate_to_node(target_node, is_forward_move=False, is_reverse_animation=True,
+                                   move_to_animate_override=move_being_undone,
+                                   animated_piece_symbol_override=animated_piece_symbol)
 
     def on_move_select_from_listbox(self, event):
         if self.is_animating: return
         selection = event.widget.curselection()
         if not selection: return
-        selected_idx = selection[0]
+
         
-        if 0 <= selected_idx < len(self.move_nodes_in_listbox):
-            target_node = self.move_nodes_in_listbox[selected_idx]
+        selected_idx_in_listbox = selection[0]
+        target_node_candidate = None
+
+        if selected_idx_in_listbox == 0 and len(self.move_nodes_in_listbox) > 0:
+            target_node_candidate = self.move_nodes_in_listbox[0] # Should be game_start_node
+        else:
+            if 0 <= selected_idx_in_listbox < len(self.move_nodes_in_listbox):
+                 target_node_candidate = self.move_nodes_in_listbox[selected_idx_in_listbox]
+
+
+        if target_node_candidate and target_node_candidate != self.current_game_node :
             is_forward = False
             is_reverse = False
-            if self.current_game_node and target_node:
-                cp, tp = (self.current_game_node.ply() if self.current_game_node.move else -1), (target_node.ply() if target_node.move else -1)
+            if self.current_game_node and target_node_candidate:
+                cp = self.current_game_node.ply() if self.current_game_node.move else -1
+                tp = target_node_candidate.ply() if target_node_candidate.move else -1
                 if tp > cp: is_forward = True
-                elif tp < cp: is_reverse = True 
+                elif tp < cp: is_reverse = True
             
-            self._navigate_to_node(target_node, is_forward_move=is_forward, is_reverse_animation=is_reverse)
+            move_payload = None
+            anim_symbol = None
+
+            if is_forward:
+                move_payload = target_node_candidate.move
+                p_obj = target_node_candidate.board().piece_at(move_payload.to_square)
+                if p_obj: anim_symbol = p_obj.symbol()
+                elif move_payload.promotion: anim_symbol = chess.Piece(move_payload.promotion, target_node_candidate.board().turn).symbol()
+            elif is_reverse:
+                move_payload = self.current_game_node.move
+                p_obj = self.current_game_node.board().piece_at(move_payload.to_square)
+                if p_obj: anim_symbol = p_obj.symbol()
+                elif move_payload.promotion:
+                    p_color = not target_node_candidate.board().turn
+                    anim_symbol = chess.Piece(chess.PAWN, p_color).symbol()
+            
+            self._navigate_to_node(target_node_candidate, is_forward_move=is_forward, is_reverse_animation=is_reverse,
+                                   move_to_animate_override=move_payload, animated_piece_symbol_override=anim_symbol)
+
 
     def update_navigation_buttons(self):
         if self.current_game_node:
@@ -527,53 +559,42 @@ class ChessAnalyzerApp:
     def flip_board(self):
         if self.is_animating: return
         self.board_orientation_white_pov = not self.board_orientation_white_pov
-        self.clear_highlighted_squares() 
-        self.selected_square_for_move = None 
+        self.clear_highlighted_squares()
+        self.selected_square_for_move = None
         self._draw_all_pieces()
         self._draw_move_arrows()
 
     def on_board_click(self, event):
         if self.is_animating or self.board_state.is_game_over(): return
-        
         clicked_square = self.get_square_from_coords(event.x, event.y)
         if clicked_square is None: return
 
         if self.selected_square_for_move is not None:
             move = chess.Move(self.selected_square_for_move, clicked_square)
-            
             piece = self.board_state.piece_at(self.selected_square_for_move)
             if piece and piece.piece_type == chess.PAWN:
                 if (piece.color == chess.WHITE and chess.square_rank(clicked_square) == 7) or \
                    (piece.color == chess.BLACK and chess.square_rank(clicked_square) == 0):
-                    
-                    promo_char = simpledialog.askstring("Promotion", "Promote to (q, r, b, n)?", parent=self.root)
+                    promo_char = simpledialog.askstring("Promotion", "Promote to (q, r, b, n)?", parent=self.root, initialvalue="q")
                     if promo_char and promo_char.lower() in ['q', 'r', 'b', 'n']:
                         move.promotion = chess.PIECE_SYMBOLS.index(promo_char.lower())
                     else: 
-                        move.promotion = chess.QUEEN 
-                        
-
+                        self.selected_square_for_move = None
+                        self.clear_highlighted_squares()
+                        return 
+            
+            current_selected_sq = self.selected_square_for_move
+            self.selected_square_for_move = None 
+            self.clear_highlighted_squares()
 
             if self.board_state.is_legal(move):
                 self.make_user_move(move)
             else: 
-                if clicked_square == self.selected_square_for_move: 
-                     self.selected_square_for_move = None
-                     self.clear_highlighted_squares()
-                else: 
-                    piece_at_click = self.board_state.piece_at(clicked_square)
-                    if piece_at_click and piece_at_click.color == self.board_state.turn:
-                        self.selected_square_for_move = clicked_square
-                        self.highlight_legal_moves(clicked_square)
-                    else:
-                        self.selected_square_for_move = None
-                        self.clear_highlighted_squares()
-            
-            if clicked_square != self.selected_square_for_move:
-                 self.selected_square_for_move = None
-                 self.clear_highlighted_squares()
-
-        else:
+                new_piece_at_click = self.board_state.piece_at(clicked_square)
+                if new_piece_at_click and new_piece_at_click.color == self.board_state.turn and clicked_square != current_selected_sq :
+                    self.selected_square_for_move = clicked_square
+                    self.highlight_legal_moves(clicked_square)
+        else: 
             piece_at_click = self.board_state.piece_at(clicked_square)
             if piece_at_click and piece_at_click.color == self.board_state.turn:
                 self.selected_square_for_move = clicked_square
@@ -583,57 +604,66 @@ class ChessAnalyzerApp:
 
     def make_user_move(self, move):
         if not self.board_state.is_legal(move): return
-
         captured = self.board_state.is_capture(move) or self.board_state.is_en_passant(move)
         
+        new_node = None
         if self.current_game_node:
-            if not self.current_game_node.variations :
-                new_node = self.current_game_node.add_variation(move)
-            else:
-                  if self.current_game_node.game().headers.get("Event") == "FEN Setup":
-                      new_node = self.current_game_node.add_main_variation(move)
-                  else:
-                      new_node = self.current_game_node.add_variation(move, promote=True)
-            
+            try:
+                new_node = self.current_game_node.add_main_variation(move)
+            except Exception:
+                try:
+                    new_node = self.current_game_node.add_variation(move, promote=True)
+                except Exception as e_var:
+                    print(f"Error adding move as variation: {e_var}")
+                    return 
+        else: 
+            new_game = chess.pgn.Game()
+            new_game.setup(self.board_state) 
+            new_node = new_game.add_main_variation(move)
+
+        if new_node:
             self.current_game_node = new_node
             self.board_state = self.current_game_node.board()
         else:
-            new_game = chess.pgn.Game()
-            new_game.setup(self.board_state)
-            self.current_game_node = new_game.add_main_variation(move)
-            self.board_state = self.current_game_node.board()
+            self.board_state.push(move)
 
-        self.selected_square_for_move = None
-        self.clear_highlighted_squares()
-        self.update_board_display(move_to_animate=move, captured=captured)
+        animated_piece_symbol = None
+        p_obj = self.board_state.piece_at(move.to_square)
+        if p_obj: animated_piece_symbol = p_obj.symbol()
+        elif move.promotion: animated_piece_symbol = chess.Piece(move.promotion, self.board_state.turn).symbol()
 
+        self.update_board_display(move_to_animate=move, captured=captured, animated_piece_symbol=animated_piece_symbol)
 
     def highlight_legal_moves(self, from_square):
         self.clear_highlighted_squares()
         piece = self.board_state.piece_at(from_square)
-        if not piece or piece.color != self.board_state.turn:
-            return
+        if not piece or piece.color != self.board_state.turn: return
 
         x, y = self.get_square_coords(from_square)
-        rect_id = self.board_canvas.create_rectangle(x, y, x + SQUARE_SIZE, y + SQUARE_SIZE, outline="yellow", width=3, tags="highlight")
+        rect_id = self.board_canvas.create_rectangle(x, y, x + SQUARE_SIZE, y + SQUARE_SIZE, outline="#FFD700", width=3, tags="highlight_selected")
         self.highlighted_squares_ids.append(rect_id)
 
         for move in self.board_state.legal_moves:
             if move.from_square == from_square:
                 to_x, to_y = self.get_square_coords(move.to_square)
-                cx, cy = to_x + SQUARE_SIZE / 2, to_y + SQUARE_SIZE / 2
-                radius = SQUARE_SIZE / 6
-                circle_id = self.board_canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius, fill="gray", stipple="gray50", outline="", tags="highlight")
+                radius = SQUARE_SIZE / 7
+                fill_color = "#A0A0A0" if not self.board_state.is_capture(move) else "#FF6060"
+                
+                circle_id = self.board_canvas.create_oval(
+                    to_x + SQUARE_SIZE/2 - radius, to_y + SQUARE_SIZE/2 - radius,
+                    to_x + SQUARE_SIZE/2 + radius, to_y + SQUARE_SIZE/2 + radius,
+                    fill=fill_color, outline="", tags="highlight"
+                )
                 self.highlighted_squares_ids.append(circle_id)
 
     def clear_highlighted_squares(self):
-        for item_id in self.highlighted_squares_ids:
-            self.board_canvas.delete(item_id)
+        self.board_canvas.delete("highlight_selected")
+        self.board_canvas.delete("highlight")
         self.highlighted_squares_ids = []
 
     def request_analysis_current_pos(self):
         if self.is_animating:
-            self.root.after(ANIMATION_STEPS * ANIMATION_DELAY + 100, self.request_analysis_current_pos)
+            self.root.after(ANIMATION_STEPS * ANIMATION_DELAY + 200, self.request_analysis_current_pos)
             return
 
         if not self.engine or not self.engine.process or self.board_state.is_game_over():
@@ -695,7 +725,7 @@ class ChessAnalyzerApp:
 
     def on_closing(self):
         self.is_animating = False
-        if self.engine: self.engine.quit_engine()
+        if self.engine and self.engine.process : self.engine.quit_engine()
         if self.sound_enabled and pygame.mixer.get_init(): pygame.mixer.quit()
         self.root.destroy()
 
