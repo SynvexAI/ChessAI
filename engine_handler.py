@@ -6,7 +6,7 @@ STOCKFISH_PATH_WINDOWS = "./stockfish.exe"
 STOCKFISH_PATH_LINUX_MACOS = "./stockfish"
 
 class EngineHandler:
-    def __init__(self, engine_path=None):
+    def __init__(self, engine_path=None, initial_skill_level=20):
         if engine_path is None:
             if platform.system() == "Windows":
                 self.engine_path = STOCKFISH_PATH_WINDOWS
@@ -17,6 +17,7 @@ class EngineHandler:
         
         self.process = None
         self.is_ready = False
+        self.skill_level = initial_skill_level
         self._start_engine()
 
     def _start_engine(self):
@@ -35,6 +36,7 @@ class EngineHandler:
                 if "uciok" in line:
                     self.is_ready = True
                     break
+            self.set_skill_level(self.skill_level)
             self._send_command("isready")
             while True:
                 line = self._read_output()
@@ -57,6 +59,12 @@ class EngineHandler:
             line = self.process.stdout.readline().strip()
             return line
         return ""
+
+    def set_skill_level(self, level):
+        if not self.process or not self.is_ready : return
+        level = max(0, min(20, int(level)))
+        self.skill_level = level
+        self._send_command(f"setoption name Skill Level value {self.skill_level}")
 
     def set_position_from_fen(self, fen_string):
         if not self.process: return

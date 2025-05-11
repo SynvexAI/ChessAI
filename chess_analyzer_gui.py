@@ -46,13 +46,13 @@ class ChessAnalyzerApp:
             self.capture_sound = None
             print(f"Sound init error: {e}")
 
-
         self.piece_images = {}
         self.current_game_node = None
         self.board_state = chess.Board()
         self.board_orientation_white_pov = True
-
-        self.engine = EngineHandler()
+        
+        self.engine_skill_var = tk.IntVar(value=20) # Default skill
+        self.engine = EngineHandler(initial_skill_level=self.engine_skill_var.get())
         if not self.engine.process:
             messagebox.showwarning("Engine Error", f"Stockfish not found or failed to start from '{self.engine.engine_path}'. Analysis unavailable.")
         
@@ -106,7 +106,6 @@ class ChessAnalyzerApp:
 
         pgn_controls_frame = ttk.Frame(left_frame)
         pgn_controls_frame.pack(fill=tk.X, pady=5)
-
         self.load_pgn_button = ttk.Button(pgn_controls_frame, text="Load PGN", command=self.load_pgn)
         self.load_pgn_button.pack(side=tk.LEFT, padx=(0,5))
         self.prev_move_button = ttk.Button(pgn_controls_frame, text="< Prev", command=self.prev_move_action, state=tk.DISABLED)
@@ -122,7 +121,6 @@ class ChessAnalyzerApp:
         self.load_fen_button.pack(side=tk.LEFT, padx=(0,5))
         self.export_fen_button = ttk.Button(fen_frame, text="Copy FEN", command=self.export_fen_to_clipboard)
         self.export_fen_button.pack(side=tk.LEFT, padx=5)
-
 
         self.eval_bar_canvas = tk.Canvas(left_frame, height=EVAL_BAR_HEIGHT, bg="dim gray")
         self.eval_bar_canvas.pack(fill=tk.X, pady=(5,0))
@@ -152,9 +150,18 @@ class ChessAnalyzerApp:
         self.current_move_label.pack(anchor=tk.NW, fill=tk.X)
 
         self.analyze_button = ttk.Button(self.info_panel, text="Analyze Current Position", command=self.request_analysis_current_pos)
-        self.analyze_button.pack(fill=tk.X, pady=(10,0))
+        self.analyze_button.pack(fill=tk.X, pady=(5,0))
 
-        ttk.Label(self.info_panel, text="Engine Eval:", font=("Arial", 10)).pack(anchor=tk.W, pady=(10,0))
+        engine_skill_frame = ttk.Frame(self.info_panel)
+        engine_skill_frame.pack(fill=tk.X, pady=(5,0))
+        ttk.Label(engine_skill_frame, text="Engine Skill (0-20):").pack(side=tk.LEFT)
+        self.skill_scale = ttk.Scale(engine_skill_frame, from_=0, to=20, orient=tk.HORIZONTAL, variable=self.engine_skill_var, command=self.update_engine_skill)
+        self.skill_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.skill_label_value = ttk.Label(engine_skill_frame, textvariable=self.engine_skill_var, width=2) # To display current value
+        self.skill_label_value.pack(side=tk.LEFT)
+
+
+        ttk.Label(self.info_panel, text="Engine Eval:", font=("Arial", 10)).pack(anchor=tk.W, pady=(5,0))
         self.evaluation_label = ttk.Label(self.info_panel, text="N/A", font=("Arial", 10, "italic"))
         self.evaluation_label.pack(anchor=tk.NW, fill=tk.X)
         
@@ -164,6 +171,11 @@ class ChessAnalyzerApp:
         
         self.game_status_label = ttk.Label(self.info_panel, text="", font=("Arial", 10, "bold"), foreground="blue")
         self.game_status_label.pack(anchor=tk.NW, fill=tk.X, pady=(10,0))
+
+    def update_engine_skill(self, event=None): # event is passed by Scale command
+        if self.engine and self.engine.process:
+            new_skill = self.engine_skill_var.get()
+            self.engine.set_skill_level(new_skill)
 
     def get_square_coords(self, square_index):
         file = chess.square_file(square_index)
@@ -217,7 +229,6 @@ class ChessAnalyzerApp:
 
     def animate_move(self, move, captured, is_reverse_animation, piece_symbol):
         from_sq_anim, to_sq_anim = (move.to_square, move.from_square) if is_reverse_animation else (move.from_square, move.to_square)
-        
         start_x, start_y = self.get_square_coords(from_sq_anim)
         end_x, end_y = self.get_square_coords(to_sq_anim)
 
@@ -228,36 +239,33 @@ class ChessAnalyzerApp:
         animated_image = self.piece_images[piece_symbol]
         self.animating_piece_id = self.board_canvas.create_image(start_x, start_y, anchor=tk.NW, image=animated_image, tags="anim_piece")
         self.board_canvas.tag_raise(self.animating_piece_id)
-
         self.board_canvas.delete("piece")
         
-        board_state_for_static_pieces = self.current_game_node.parent.board() if not is_reverse_animation and self.current_game_node.parent else self.board_state
-        if is_reverse_animation :
-             board_state_for_static_pieces = self.board_state
-        else:
+        board_for_static_pieces = None
+        if is_reverse_animation:
+            board_for_static_pieces = self.board_state # State we are going to
+        else: # Forward animation
             if self.current_game_node and self.current_game_node.parent:
-                 board_state_for_static_pieces = self.current_game_node.parent.board()
-            else:
-                 board_state_for_static_pieces = chess.Board(self.board_state.fen())
-                 if self.board_state.move_stack:
-                     try:
-                        board_state_for_static_pieces.pop()
+                board_for_static_pieces = self.current_game_node.parent.board()
+            else: # E.g. first user move from initial setup or FEN
+                 temp_board = chess.Board(self.board_state.fen())
+                 if self.board_state.move_stack: # If the board_state is already *after* the move
+                     try: temp_board.pop() # Get state before
                      except IndexError: pass
+                 board_for_static_pieces = temp_board
 
-
-        for sq_idx in chess.SQUARES:
-            if sq_idx == from_sq_anim : continue 
-            
-            piece_on_sq = board_state_for_static_pieces.piece_at(sq_idx)
-            if piece_on_sq:
-                symbol_static = piece_on_sq.symbol()
-                if symbol_static in self.piece_images and self.piece_images[symbol_static]:
-                    x_static, y_static = self.get_square_coords(sq_idx)
-                    if not (not is_reverse_animation and captured and sq_idx == to_sq_anim):
-                         self.board_canvas.create_image(x_static, y_static, anchor=tk.NW, image=self.piece_images[symbol_static], tags=("piece", f"piece_at_{sq_idx}"))
+        if board_for_static_pieces:
+            for sq_idx in chess.SQUARES:
+                if sq_idx == from_sq_anim : continue 
+                piece_on_sq = board_for_static_pieces.piece_at(sq_idx)
+                if piece_on_sq:
+                    symbol_static = piece_on_sq.symbol()
+                    if symbol_static in self.piece_images and self.piece_images[symbol_static]:
+                        x_static, y_static = self.get_square_coords(sq_idx)
+                        if not (not is_reverse_animation and captured and sq_idx == to_sq_anim):
+                             self.board_canvas.create_image(x_static, y_static, anchor=tk.NW, image=self.piece_images[symbol_static], tags=("piece", f"piece_at_{sq_idx}"))
         
         self._draw_move_arrows()
-
         dx = (end_x - start_x) / ANIMATION_STEPS
         dy = (end_y - start_y) / ANIMATION_STEPS
 
@@ -269,14 +277,12 @@ class ChessAnalyzerApp:
                 self.board_canvas.delete(self.animating_piece_id)
                 self.animating_piece_id = None
                 self._finalize_animation_and_update(move, captured, is_reverse_animation)
-        
         animation_step(1)
 
     def _finalize_animation_and_update(self, move, captured, is_reverse_animation):
         self.is_animating = False
         if not is_reverse_animation: 
             self.play_sound(captured)
-        
         self._draw_all_pieces()
         self._draw_move_arrows()
         self.update_info_panel()
@@ -303,8 +309,8 @@ class ChessAnalyzerApp:
         self.game_status_label.config(text="")
 
         if self.current_game_node:
-            game = self.current_game_node.game()
-            headers = game.headers
+            game_root_node = self.current_game_node.game()
+            headers = game_root_node.headers
             info_text = f"W: {headers.get('White', '?')} ({headers.get('WhiteElo', '')}) B: {headers.get('Black', '?')} ({headers.get('BlackElo', '')})\n"
             info_text += f"Res: {headers.get('Result', '*')} Evt: {headers.get('Event', '?')} ({headers.get('Site', '')}, {headers.get('Date', '?')})"
             self.game_info_label.config(text=info_text)
@@ -312,34 +318,44 @@ class ChessAnalyzerApp:
             self.moves_listbox.delete(0, tk.END)
             self.move_nodes_in_listbox = []
             
-            game_start_node = game
             self.moves_listbox.insert(tk.END, "--- Start ---")
-            self.move_nodes_in_listbox.append(game_start_node)
+            self.move_nodes_in_listbox.append(game_root_node)
 
-            temp_b = game_start_node.board()
-            current_line_text = ""
-            for node in game_start_node.mainline():
-                if node.move is None: continue
+            board_for_san = game_root_node.board() # Initial board for SAN generation
+            for node in game_root_node.mainline_nodes():
+                if node.move is None: # This is the root node itself, already handled.
+                    if node == game_root_node: continue
+                    # This case (None move not at root in mainline_nodes) should ideally not happen.
+                    # If it does, it means a node without a move, which is unusual for mainline.
+                    # We'll just skip adding it to listbox and nodes list if no move.
+                    continue 
                 
-                san = temp_b.san(node.move)
-                if temp_b.turn == chess.WHITE:
-                    if current_line_text:
-                        self.moves_listbox.insert(tk.END, current_line_text.strip())
-                    current_line_text = f"{temp_b.fullmove_number}. {san}"
+                san_move = board_for_san.san(node.move)
+                display_text = ""
+                if board_for_san.turn == chess.WHITE:
+                    display_text = f"{board_for_san.fullmove_number}. {san_move}"
                 else:
-                    current_line_text += f"  {san}"
+                    display_text = f"{board_for_san.fullmove_number}... {san_move}"
                 
+                self.moves_listbox.insert(tk.END, display_text)
                 self.move_nodes_in_listbox.append(node)
-                temp_b.push(node.move)
-            
-            if current_line_text:
-                self.moves_listbox.insert(tk.END, current_line_text.strip())
+                
+                try:
+                    board_for_san.push(node.move)
+                except Exception as e: # Should not happen if PGN is valid
+                    print(f"Error pushing move for SAN: {node.move} on board {board_for_san.fen()} - {e}")
+                    break # Stop processing moves if board state becomes inconsistent
 
             try:
-                idx_to_select = self.move_nodes_in_listbox.index(self.current_game_node)
-                self.moves_listbox.selection_clear(0, tk.END)
-                self.moves_listbox.selection_set(idx_to_select)
-                self.moves_listbox.see(idx_to_select)
+                if self.current_game_node in self.move_nodes_in_listbox:
+                    idx_to_select = self.move_nodes_in_listbox.index(self.current_game_node)
+                    self.moves_listbox.selection_clear(0, tk.END)
+                    self.moves_listbox.selection_set(idx_to_select)
+                    self.moves_listbox.see(idx_to_select)
+                elif not self.current_game_node.move: # If it's the root node
+                    self.moves_listbox.selection_set(0)
+                    self.moves_listbox.see(0)
+
             except (ValueError, tk.TclError): pass
 
 
@@ -391,7 +407,6 @@ class ChessAnalyzerApp:
             text_to_display_mate_val = score_mate if self.board_state.turn == chess.WHITE else -score_mate
             text_to_display = f"M{'+' if text_to_display_mate_val > 0 else ''}{text_to_display_mate_val}"
             normalized_score = 1.0 if effective_mate_score > 0 else 0.0
-
         elif score_cp is not None:
             actual_score_cp = score_cp if self.board_state.turn == chess.WHITE else -score_cp
             clamped_score = max(-max_eval_cp, min(max_eval_cp, actual_score_cp))
@@ -401,7 +416,6 @@ class ChessAnalyzerApp:
         white_width = bar_width * normalized_score
         self.eval_bar_canvas.coords(self.eval_line, 0, 0, white_width, EVAL_BAR_HEIGHT)
         self.eval_bar_canvas.itemconfig(self.eval_line, fill="white")
-        
         black_rect_id = self.eval_bar_canvas.find_withtag("black_eval_part")
         if black_rect_id: self.eval_bar_canvas.delete(black_rect_id)
         self.eval_bar_canvas.create_rectangle(white_width, 0, bar_width, EVAL_BAR_HEIGHT, fill="black", outline="", tags="black_eval_part")
@@ -455,19 +469,15 @@ class ChessAnalyzerApp:
     def _navigate_to_node(self, target_node, is_forward_move=None, is_reverse_animation=False, 
                           move_to_animate_override=None, animated_piece_symbol_override=None):
         if self.is_animating or target_node is None: return
-        
         move_to_animate = move_to_animate_override
         animated_piece_symbol = animated_piece_symbol_override
         captured = False
-
         if move_to_animate:
-            if is_forward_move:
-                board_before_move = target_node.parent.board() if target_node.parent else chess.Board()
+            if is_forward_move and target_node.parent:
+                board_before_move = target_node.parent.board()
                 captured = board_before_move.is_capture(move_to_animate) or board_before_move.is_en_passant(move_to_animate)
-        
         self.current_game_node = target_node
         self.board_state = self.current_game_node.board()
-
         self.update_board_display(move_to_animate=move_to_animate, captured=captured, 
                                   is_reverse_animation=is_reverse_animation, 
                                   animated_piece_symbol=animated_piece_symbol)
@@ -477,12 +487,10 @@ class ChessAnalyzerApp:
             target_node = self.current_game_node.variation(0)
             move_to_animate = target_node.move
             animated_piece_symbol = None
-            
             piece_obj = target_node.board().piece_at(move_to_animate.to_square)
             if piece_obj: animated_piece_symbol = piece_obj.symbol()
-            elif move_to_animate.promotion:
-                animated_piece_symbol = chess.Piece(move_to_animate.promotion, target_node.board().turn).symbol()
-            
+            elif move_to_animate.promotion: 
+                animated_piece_symbol = chess.Piece(move_to_animate.promotion, not target_node.board().turn).symbol() # Color of piece just promoted
             self._navigate_to_node(target_node, is_forward_move=True, 
                                    move_to_animate_override=move_to_animate, 
                                    animated_piece_symbol_override=animated_piece_symbol)
@@ -492,13 +500,12 @@ class ChessAnalyzerApp:
             move_being_undone = self.current_game_node.move
             target_node = self.current_game_node.parent
             animated_piece_symbol = None
-
-            piece_obj = self.current_game_node.board().piece_at(move_being_undone.to_square)
-            if piece_obj: animated_piece_symbol = piece_obj.symbol()
+            piece_obj_on_dest_sq_before_undo = self.current_game_node.board().piece_at(move_being_undone.to_square)
+            if piece_obj_on_dest_sq_before_undo: 
+                animated_piece_symbol = piece_obj_on_dest_sq_before_undo.symbol()
             elif move_being_undone.promotion:
-                 pawn_color = not target_node.board().turn 
+                 pawn_color = target_node.board().turn # The pawn's color that was promoted
                  animated_piece_symbol = chess.Piece(chess.PAWN, pawn_color).symbol()
-
             self._navigate_to_node(target_node, is_forward_move=False, is_reverse_animation=True,
                                    move_to_animate_override=move_being_undone,
                                    animated_piece_symbol_override=animated_piece_symbol)
@@ -507,46 +514,34 @@ class ChessAnalyzerApp:
         if self.is_animating: return
         selection = event.widget.curselection()
         if not selection: return
-
+        selected_listbox_idx = selection[0]
         
-        selected_idx_in_listbox = selection[0]
-        target_node_candidate = None
+        if 0 <= selected_listbox_idx < len(self.move_nodes_in_listbox):
+            target_node = self.move_nodes_in_listbox[selected_listbox_idx]
+            if target_node == self.current_game_node: return
 
-        if selected_idx_in_listbox == 0 and len(self.move_nodes_in_listbox) > 0:
-            target_node_candidate = self.move_nodes_in_listbox[0] # Should be game_start_node
-        else:
-            if 0 <= selected_idx_in_listbox < len(self.move_nodes_in_listbox):
-                 target_node_candidate = self.move_nodes_in_listbox[selected_idx_in_listbox]
-
-
-        if target_node_candidate and target_node_candidate != self.current_game_node :
-            is_forward = False
-            is_reverse = False
-            if self.current_game_node and target_node_candidate:
-                cp = self.current_game_node.ply() if self.current_game_node.move else -1
-                tp = target_node_candidate.ply() if target_node_candidate.move else -1
-                if tp > cp: is_forward = True
-                elif tp < cp: is_reverse = True
+            is_forward, is_reverse = False, False
+            current_ply = self.current_game_node.ply() if self.current_game_node.move else -1
+            target_ply = target_node.ply() if target_node.move else -1
+            if target_ply > current_ply: is_forward = True
+            elif target_ply < current_ply: is_reverse = True
             
-            move_payload = None
-            anim_symbol = None
-
+            move_payload, anim_symbol = None, None
             if is_forward:
-                move_payload = target_node_candidate.move
-                p_obj = target_node_candidate.board().piece_at(move_payload.to_square)
+                move_payload = target_node.move
+                p_obj = target_node.board().piece_at(move_payload.to_square)
                 if p_obj: anim_symbol = p_obj.symbol()
-                elif move_payload.promotion: anim_symbol = chess.Piece(move_payload.promotion, target_node_candidate.board().turn).symbol()
+                elif move_payload.promotion: anim_symbol = chess.Piece(move_payload.promotion, not target_node.board().turn).symbol()
             elif is_reverse:
                 move_payload = self.current_game_node.move
                 p_obj = self.current_game_node.board().piece_at(move_payload.to_square)
                 if p_obj: anim_symbol = p_obj.symbol()
                 elif move_payload.promotion:
-                    p_color = not target_node_candidate.board().turn
+                    p_color = target_node.board().turn 
                     anim_symbol = chess.Piece(chess.PAWN, p_color).symbol()
             
-            self._navigate_to_node(target_node_candidate, is_forward_move=is_forward, is_reverse_animation=is_reverse,
+            self._navigate_to_node(target_node, is_forward_move=is_forward, is_reverse_animation=is_reverse,
                                    move_to_animate_override=move_payload, animated_piece_symbol_override=anim_symbol)
-
 
     def update_navigation_buttons(self):
         if self.current_game_node:
@@ -582,11 +577,9 @@ class ChessAnalyzerApp:
                         self.selected_square_for_move = None
                         self.clear_highlighted_squares()
                         return 
-            
             current_selected_sq = self.selected_square_for_move
             self.selected_square_for_move = None 
             self.clear_highlighted_squares()
-
             if self.board_state.is_legal(move):
                 self.make_user_move(move)
             else: 
@@ -605,17 +598,12 @@ class ChessAnalyzerApp:
     def make_user_move(self, move):
         if not self.board_state.is_legal(move): return
         captured = self.board_state.is_capture(move) or self.board_state.is_en_passant(move)
-        
         new_node = None
         if self.current_game_node:
-            try:
-                new_node = self.current_game_node.add_main_variation(move)
-            except Exception:
-                try:
-                    new_node = self.current_game_node.add_variation(move, promote=True)
-                except Exception as e_var:
-                    print(f"Error adding move as variation: {e_var}")
-                    return 
+            try: new_node = self.current_game_node.add_main_variation(move)
+            except Exception: 
+                try: new_node = self.current_game_node.add_variation(move, promote=True)
+                except Exception as e_var: return 
         else: 
             new_game = chess.pgn.Game()
             new_game.setup(self.board_state) 
@@ -624,13 +612,12 @@ class ChessAnalyzerApp:
         if new_node:
             self.current_game_node = new_node
             self.board_state = self.current_game_node.board()
-        else:
-            self.board_state.push(move)
+        else: self.board_state.push(move)
 
         animated_piece_symbol = None
-        p_obj = self.board_state.piece_at(move.to_square)
+        p_obj = self.board_state.piece_at(move.to_square) # Piece is now at destination
         if p_obj: animated_piece_symbol = p_obj.symbol()
-        elif move.promotion: animated_piece_symbol = chess.Piece(move.promotion, self.board_state.turn).symbol()
+        elif move.promotion: animated_piece_symbol = chess.Piece(move.promotion, not self.board_state.turn).symbol() # Color of the piece that just promoted
 
         self.update_board_display(move_to_animate=move, captured=captured, animated_piece_symbol=animated_piece_symbol)
 
@@ -638,48 +625,31 @@ class ChessAnalyzerApp:
         self.clear_highlighted_squares()
         piece = self.board_state.piece_at(from_square)
         if not piece or piece.color != self.board_state.turn: return
-
         x, y = self.get_square_coords(from_square)
         rect_id = self.board_canvas.create_rectangle(x, y, x + SQUARE_SIZE, y + SQUARE_SIZE, outline="#FFD700", width=3, tags="highlight_selected")
-        self.highlighted_squares_ids.append(rect_id)
-
         for move in self.board_state.legal_moves:
             if move.from_square == from_square:
                 to_x, to_y = self.get_square_coords(move.to_square)
                 radius = SQUARE_SIZE / 7
                 fill_color = "#A0A0A0" if not self.board_state.is_capture(move) else "#FF6060"
-                
-                circle_id = self.board_canvas.create_oval(
-                    to_x + SQUARE_SIZE/2 - radius, to_y + SQUARE_SIZE/2 - radius,
-                    to_x + SQUARE_SIZE/2 + radius, to_y + SQUARE_SIZE/2 + radius,
-                    fill=fill_color, outline="", tags="highlight"
-                )
-                self.highlighted_squares_ids.append(circle_id)
+                self.board_canvas.create_oval(to_x + SQUARE_SIZE/2 - radius, to_y + SQUARE_SIZE/2 - radius, to_x + SQUARE_SIZE/2 + radius, to_y + SQUARE_SIZE/2 + radius, fill=fill_color, outline="", tags="highlight")
 
     def clear_highlighted_squares(self):
         self.board_canvas.delete("highlight_selected")
         self.board_canvas.delete("highlight")
-        self.highlighted_squares_ids = []
 
     def request_analysis_current_pos(self):
         if self.is_animating:
             self.root.after(ANIMATION_STEPS * ANIMATION_DELAY + 200, self.request_analysis_current_pos)
             return
-
         if not self.engine or not self.engine.process or self.board_state.is_game_over():
             if self.board_state.is_game_over():
-                self.evaluation_label.config(text="Game Over")
-                self.best_move_label.config(text="-")
+                self.evaluation_label.config(text="Game Over"); self.best_move_label.config(text="-")
             elif not self.engine or not self.engine.process:
-                self.evaluation_label.config(text="Engine Inactive")
-                self.best_move_label.config(text="N/A")
-            self.update_eval_bar(None, None)
-            self.best_move_from_engine = None
-            self._draw_move_arrows()
+                self.evaluation_label.config(text="Engine Inactive"); self.best_move_label.config(text="N/A")
+            self.update_eval_bar(None, None); self.best_move_from_engine = None; self._draw_move_arrows()
             return
-
-        self.evaluation_label.config(text="Analyzing...")
-        self.best_move_label.config(text="Analyzing...")
+        self.evaluation_label.config(text="Analyzing..."); self.best_move_label.config(text="Analyzing...")
         current_fen = self.board_state.fen()
         threading.Thread(target=self._run_engine_analysis, args=(current_fen,), daemon=True).start()
 
@@ -693,8 +663,7 @@ class ChessAnalyzerApp:
         try:
             score_cp, score_mate, best_move_uci, analyzed_fen = self.analysis_queue.get_nowait()
             if self.board_state.fen() != analyzed_fen or self.is_animating:
-                self.root.after(100, self.process_analysis_queue)
-                return
+                self.root.after(100, self.process_analysis_queue); return
 
             if score_mate is not None:
                 actual_mate_val = score_mate if self.board_state.turn == chess.WHITE else -score_mate
@@ -709,17 +678,14 @@ class ChessAnalyzerApp:
             if best_move_uci and best_move_uci != "(none)":
                 try:
                     move = self.board_state.parse_uci(best_move_uci)
-                    if self.board_state.is_legal(move):
-                        new_best_move_obj = move
-                        self.best_move_label.config(text=self.board_state.san(move))
+                    if self.board_state.is_legal(move): new_best_move_obj = move; self.best_move_label.config(text=self.board_state.san(move))
                     else: self.best_move_label.config(text=f"Illegal: {best_move_uci}")
                 except ValueError: self.best_move_label.config(text=f"UCI Err: {best_move_uci}")
             elif self.board_state.is_game_over(): self.best_move_label.config(text="Game Over")
             else: self.best_move_label.config(text="N/A (no move)")
             
             if self.best_move_from_engine != new_best_move_obj:
-                self.best_move_from_engine = new_best_move_obj
-                self._draw_move_arrows()
+                self.best_move_from_engine = new_best_move_obj; self._draw_move_arrows()
         except queue.Empty: pass
         finally: self.root.after(100, self.process_analysis_queue)
 
