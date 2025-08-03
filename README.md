@@ -1,59 +1,85 @@
-# ChessAI - **Non-Functional Project**
+♟️ ChessAI — Анализатор шахматных партий
 
-**Warning:** This project is currently **non-functional** and under development. Use at your own risk.
+ChessAI — это инструмент для анализа шахматных партий, использующий движок Stockfish и графический интерфейс на Python.  Он позволяет загружать партии в формате PGN, анализировать ходы и получать рекомендации по улучшению игры. 
 
-## Project Description
 
-ChessAI is a project created to provide **real-time chess game analysis** directly on [Chess.com](https://www.google.com/url?sa=E&source=gmail&q=https://www.chess.com). Utilizing the powerful Stockfish engine and the flexibility of Python, this tool was intended to assist players by suggesting optimal moves during gameplay.
 
-**Important:** This project should be considered **experimental and non-functional**. It is not intended for use as a fully operational "cheat" or to gain an unfair advantage in chess games. Development is currently paused, and **functionality is not guaranteed** at this time.
+🚀 Возможности
 
-**Disclaimer:** The developer assumes **no responsibility** for any consequences that may arise from the use of this project. This includes, but is not limited to, account suspensions on Chess.com or any other platform, misinterpretation of analysis, or any other unintended outcomes. Use this project at your own discretion.
+✅ Загрузка и анализ партий в формате PGN
 
-## Features (Planned but not fully implemented)
+✅ Интеграция с движком Stockfish для оценки позиций
 
-  * **Real-time Analysis:** The program was intended to analyze the current chess position on Chess.com in real-time.
-  * **Move Suggestions:** Based on Stockfish analysis, the program was supposed to suggest the best moves for the player.
-  * **Chess.com Integration:** The tool was designed to work directly within a browser while Chess.com is open.
+✅ Графический интерфейс на Tkinter для удобного взаимодействия
 
-## Technologies
+✅ Подсветка лучших ходов и ошибок
 
-  * **Stockfish:** A powerful open-source chess engine used for position analysis and move calculation.
-      * [Stockfish Official Website](https://www.google.com/url?sa=E&source=gmail&q=https://stockfishchess.org/)
-  * **Python:** The programming language used to create the core logic and integration.
-      * [Python Official Website](https://www.google.com/url?sa=E&source=gmail&q=https://www.python.org/)
+✅ Кроссплатформенность (Windows, Linux, macOS) 
 
-## Installation (Assumed)
 
-*(As the project is non-functional, these instructions may be incomplete or incorrect)*
+🛠️ Установка
 
-1.  **Install Python:** If you do not have Python installed, download and install the latest version from the [official Python website](https://www.google.com/url?sa=E&source=gmail&q=https://www.python.org/).
-2.  **Install Stockfish:** You will need to install the Stockfish chess engine. Installation instructions can be found on the [official Stockfish website](https://www.google.com/url?sa=E&source=gmail&q=https://stockfishchess.org/). Ensure that the path to the Stockfish executable is added to your system's `PATH` variable or is known to the program.
-3.  **Download the ChessAI Repository:** Download the source code for the ChessAI project from [GitHub (link to GitHub repository, if available)].
+1. Убедитесь, что у вас установлен Python 3.8+
 
-## Usage (Assumed)
 
-*(As the project is non-functional, these instructions may be incomplete or incorrect)*
+2. Клонируйте репозиторий: 
 
-1.  **Run the ChessAI Program:** Execute the main Python script of the project, for example, `main.py`.
-    ```bash
-    python main.py
-    ```
-2.  **Open Chess.com:** Navigate to the [Chess.com](https://www.chess.com/) website in your browser and start a game.
-3.  **Activate Analysis:** According to the program's instructions, activate the chess position analysis. The program should begin displaying move suggestions.
+git clone https://github.com/ReNothingg/ChessAI.git
+cd ChessAI
 
-**Important:** Due to the non-functional state of the project, the installation and usage steps may be inaccurate or incomplete.
 
-## Contribution
 
-Currently, the project is not accepting contributions as development is paused.
 
-## License
 
-License not defined.
+3. Установите зависимости: 
 
-## Contact
+pip install -r requirements.txt
 
-You can see my email in my bio.
 
-**Remember: This project is non-functional and provided "as is." Do not expect stable operation or support.**
+
+
+
+4. Запустите приложение: 
+
+python chess_analyzer_gui.py
+
+
+
+
+
+📂 Структура проекта
+
+ChessAI/
+├── assets/                  # Изображения и ресурсы GUI
+├── PGN/                     # Примеры партий в формате PGN
+├── chess_analyzer_gui.py    # Основной GUI-интерфейс
+├── engine_handler.py        # Взаимодействие с движком Stockfish
+├── stockfish.exe            # Движок Stockfish (для Windows)
+├── requirements.txt         # Список зависимостей
+└── README.md                # Документация проекта
+
+
+
+📸 Скриншоты
+
+![Главное](assets/image.png)
+![Скрин](assets/image1.png)
+
+🤝 Вклад в проект
+
+Будем рады вашему участию! Пожалуйста, ознакомьтесь с CONTRIBUTING.md перед тем, как начать. 
+
+📄 Лицензия
+
+Этот проект распространяется под лицензией MIT. Подробнее см. в файле LICENSE. 
+
+
+---
+
+Если у вас есть предложения или вы нашли ошибки, пожалуйста, создайте issue или отправьте pull request. 
+
+
+---
+
+*Автор: ReNothingg* 
+
