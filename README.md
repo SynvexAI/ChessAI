@@ -58,6 +58,4 @@ ChessAI/
 
 ---
 
-## [Мой профиль chess.com](https://www.chess.com/member/blootber)
-
 Если у вас есть предложения или вы нашли ошибки, пожалуйста, создайте issue или отправьте pull request. 
