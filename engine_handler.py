@@ -8,6 +8,7 @@ STOCKFISH_PATH_LINUX_MACOS = "./stockfish"
 class EngineHandler:
     def __init__(self, engine_path=None, initial_skill_level=20):
         if engine_path is None:
+            
             if platform.system() == "Windows":
                 self.engine_path = STOCKFISH_PATH_WINDOWS
             else:
@@ -22,6 +23,7 @@ class EngineHandler:
 
     def _start_engine(self):
         try:
+            
             self.process = subprocess.Popen(
                 self.engine_path,
                 universal_newlines=True,
@@ -43,16 +45,20 @@ class EngineHandler:
                 if "readyok" in line:
                     break
         except FileNotFoundError:
-            print(f"ERROR: Engine file not found: {self.engine_path}")
+            print(f"ОШИБКА: Файл движка не найден: {self.engine_path}")
             self.process = None
         except Exception as e:
-            print(f"ERROR starting Stockfish: {e}")
+            print(f"ОШИБКА при запуске Stockfish: {e}")
             self.process = None
 
     def _send_command(self, command):
         if self.process and self.process.stdin:
-            self.process.stdin.write(command + "\n")
-            self.process.stdin.flush()
+            try:
+                self.process.stdin.write(command + "\n")
+                self.process.stdin.flush()
+            except BrokenPipeError:
+                print("Ошибка: Канал для записи в движок закрыт.")
+                self.process = None
 
     def _read_output(self):
         if self.process and self.process.stdout:
@@ -70,13 +76,6 @@ class EngineHandler:
         if not self.process: return
         self._send_command(f"position fen {fen_string}")
 
-    def set_position_from_moves(self, moves_list):
-        if not self.process: return
-        if not moves_list:
-            self._send_command("position startpos")
-        else:
-            self._send_command(f"position startpos moves {' '.join(moves_list)}")
-
     def get_evaluation_and_best_move(self, movetime_ms=1000):
         if not self.process or not self.is_ready:
             return None, None, None
@@ -86,44 +85,37 @@ class EngineHandler:
         best_move_uci = None
         score_cp = None
         score_mate = None
+        last_info_line = ""
 
+        
         while True:
             line = self._read_output()
             if line.startswith("info"):
-                parts = line.split()
-                try:
-                    if "score" in parts:
-                        score_idx = parts.index("score")
-                        if parts[score_idx + 1] == "cp":
-                            score_cp = int(parts[score_idx + 2])
-                            score_mate = None
-                        elif parts[score_idx + 1] == "mate":
-                            score_mate = int(parts[score_idx + 2])
-                            score_cp = None
-                except (ValueError, IndexError):
-                    pass
-
+                last_info_line = line 
             elif line.startswith("bestmove"):
                 parts = line.split()
                 if len(parts) > 1:
                     best_move_uci = parts[1]
                 break
-            elif not line and self.process.poll() is not None:
-                print("Engine process terminated unexpectedly.")
+            elif not line and self.process and self.process.poll() is not None:
+                print("Процесс движка неожиданно завершился.")
                 return None, None, None
         
+        if "score" in last_info_line:
+            parts = last_info_line.split()
+            try:
+                score_idx = parts.index("score")
+                if parts[score_idx + 1] == "cp":
+                    score_cp = int(parts[score_idx + 2])
+                elif parts[score_idx + 1] == "mate":
+                    score_mate = int(parts[score_idx + 2])
+            except (ValueError, IndexError):
+                pass
+
         if best_move_uci == "(none)":
             best_move_uci = None 
 
         return score_cp, score_mate, best_move_uci
-
-    def get_board_uci_moves(self, game_node):
-        moves = []
-        current = game_node
-        while current.move:
-            moves.append(current.move.uci())
-            current = current.parent
-        return list(reversed(moves))
 
     def quit_engine(self):
         if self.process:
