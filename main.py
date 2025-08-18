@@ -49,8 +49,11 @@ class ChessAnalyzerApp:
         self.evaluation_history = []
 
         self.init_sound()
+        # --- Переменные настроек движка ---
         self.engine_skill_var = tk.IntVar(value=20)
         self.engine_multipv_var = tk.IntVar(value=3)
+        self.engine_time_var = tk.IntVar(value=1200) # Макс. время в мс
+
         self.engine = EngineHandler(initial_skill_level=self.engine_skill_var.get())
         if not self.engine.process:
             messagebox.showwarning("Ошибка движка", f"Stockfish не найден. Анализ недоступен.")
@@ -196,6 +199,7 @@ class ChessAnalyzerApp:
         engine_settings_frame = ttk.LabelFrame(parent, text="Настройки движка", padding=5)
         engine_settings_frame.pack(fill=tk.X, padx=5, pady=5)
         
+        # Сила
         skill_frame = ttk.Frame(engine_settings_frame)
         skill_frame.pack(fill=tk.X)
         ttk.Label(skill_frame, text="Сила (0-20):").pack(side=tk.LEFT)
@@ -203,11 +207,19 @@ class ChessAnalyzerApp:
         self.skill_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         ttk.Label(skill_frame, textvariable=self.engine_skill_var, width=2).pack(side=tk.LEFT)
 
+        # Количество линий
         multipv_frame = ttk.Frame(engine_settings_frame)
         multipv_frame.pack(fill=tk.X, pady=(5,0))
-        ttk.Label(multipv_frame, text="Линий (1-5):").pack(side=tk.LEFT)
+        ttk.Label(multipv_frame, text="Количество строк (1-5):").pack(side=tk.LEFT)
         self.multipv_spinbox = ttk.Spinbox(multipv_frame, from_=1, to=5, textvariable=self.engine_multipv_var, width=3, command=self.update_engine_multipv)
         self.multipv_spinbox.pack(side=tk.LEFT, padx=5)
+
+        # Максимальное время
+        time_frame = ttk.Frame(engine_settings_frame)
+        time_frame.pack(fill=tk.X, pady=(5,0))
+        ttk.Label(time_frame, text="Макс. время (мс):").pack(side=tk.LEFT)
+        self.time_spinbox = ttk.Spinbox(time_frame, from_=200, to=10000, increment=100, textvariable=self.engine_time_var, width=8)
+        self.time_spinbox.pack(side=tk.LEFT, padx=5)
 
         # --- Вывод оценки (Treeview) ---
         eval_frame = ttk.LabelFrame(parent, text="Оценка движка", padding=5)
@@ -541,7 +553,7 @@ class ChessAnalyzerApp:
         if self.is_animating or self.board_state.is_game_over(): return
         
         def find_and_make_move():
-            _, best_move_uci = self.engine.get_analysis(movetime_ms=1000)
+            _, best_move_uci = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
             if best_move_uci:
                 move = chess.Move.from_uci(best_move_uci)
                 if self.board_state.is_legal(move):
@@ -551,7 +563,7 @@ class ChessAnalyzerApp:
 
     def check_puzzle_move(self, user_move):
         def check_in_thread():
-            _, best_move_uci = self.engine.get_analysis(movetime_ms=1000)
+            _, best_move_uci = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
             best_move = chess.Move.from_uci(best_move_uci)
             
             def show_result():
@@ -592,7 +604,7 @@ class ChessAnalyzerApp:
         for i, node in enumerate(nodes):
             fen_before = board.fen()
             self.engine.set_position_from_fen(fen_before)
-            analysis_before, _ = self.engine.get_analysis(movetime_ms=500)
+            analysis_before, _ = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
             
             if analysis_before and analysis_before[0].get('move_uci'):
                 score_obj = analysis_before[0]
@@ -614,7 +626,7 @@ class ChessAnalyzerApp:
                     
                     fen_after = board.fen()
                     self.engine.set_position_from_fen(fen_after)
-                    analysis_after, _ = self.engine.get_analysis(movetime_ms=200)
+                    analysis_after, _ = self.engine.get_analysis(movetime_ms=max(200, self.engine_time_var.get() // 4))
                     
                     if analysis_after and analysis_after[0].get('score_cp') is not None:
                         score_after_cp = analysis_after[0]['score_cp']
@@ -755,7 +767,7 @@ class ChessAnalyzerApp:
 
     def _run_engine_analysis(self, fen_string):
         self.engine.set_position_from_fen(fen_string)
-        analysis_lines, _ = self.engine.get_analysis(movetime_ms=1200)
+        analysis_lines, _ = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
         self.analysis_queue.put((analysis_lines, fen_string))
 
     def process_analysis_queue(self):
