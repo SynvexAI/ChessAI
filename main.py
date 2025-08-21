@@ -64,7 +64,7 @@ def make_placeholder_piece(symbol: str, size: int = SQUARE_SIZE) -> ImageTk.Phot
 class ChessAnalyzerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("ChessAI — улучшенная версия")
+        self.root.title("ChessAI")
         self.root.minsize(BOARD_IMG_WIDTH + 20, BOARD_IMG_HEIGHT + 120)
 
         self.piece_images: Dict[str, ImageTk.PhotoImage] = {}
