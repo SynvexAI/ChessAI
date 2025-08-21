@@ -1,10 +1,18 @@
 import subprocess
 import platform
-import chess
+import threading
+import time
 from typing import Optional, List, Tuple, Dict, Any
+import queue
+import re
+import os
 
-STOCKFISH_PATH_WINDOWS = "./stockfish.exe"
-STOCKFISH_PATH_LINUX_MACOS = "./stockfish"
+import chess
+
+from config import (
+    STOCKFISH_PATH_WINDOWS,
+    STOCKFISH_PATH_UNIX,
+)
 
 def log_error(msg: str) -> None:
     print(f"[EngineHandler ERROR] {msg}")
@@ -12,67 +20,119 @@ def log_error(msg: str) -> None:
 class EngineHandler:
     def __init__(self, engine_path: Optional[str] = None, initial_skill_level: int = 20) -> None:
         if engine_path is None:
-            self.engine_path = STOCKFISH_PATH_WINDOWS if platform.system() == "Windows" else STOCKFISH_PATH_LINUX_MACOS
+            self.engine_path = STOCKFISH_PATH_WINDOWS if platform.system() == "Windows" else STOCKFISH_PATH_UNIX
         else:
             self.engine_path = engine_path
+
         self.process: Optional[subprocess.Popen] = None
-        self.is_ready: bool = False
-        self.skill_level: int = initial_skill_level
+        self._reader_thread: Optional[threading.Thread] = None
+        self._out_queue: "queue.Queue[str]" = queue.Queue()
+        self._alive = threading.Event()
+        self.skill_level = initial_skill_level
+        self.is_ready = False
         self._start_engine()
 
     def _start_engine(self) -> None:
+        if not os.path.exists(self.engine_path):
+            log_error(f"Движок не найден: {self.engine_path}")
+            return
         try:
             self.process = subprocess.Popen(
-                self.engine_path,
-                universal_newlines=True,
+                [self.engine_path],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                bufsize=1
+                text=True,
+                bufsize=1,
+                universal_newlines=True
             )
-            self._send_command("uci")
-            while "uciok" not in self._read_output():
-                pass
-            self.set_skill_level(self.skill_level)
-            self.set_multi_pv(3)
-            self._send_command("isready")
-            while "readyok" not in self._read_output():
-                pass
-            self.is_ready = True
-        except FileNotFoundError:
-            log_error(f"Файл движка не найден: {self.engine_path}")
-            self.process = None
         except Exception as e:
-            log_error(f"Ошибка при запуске Stockfish: {e}")
+            log_error(f"Ошибка запуска движка: {e}")
             self.process = None
+            return
+
+        self._alive.set()
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
+
+        self._send_command("uci")
+        if not self._wait_for_token("uciok", timeout=3.0):
+            log_error("Не получил uciok от движка.")
+            return
+
+        self.set_skill_level(self.skill_level)
+        self.set_multi_pv(3)
+
+        self._send_command("isready")
+        if not self._wait_for_token("readyok", timeout=2.0):
+            log_error("Движок не ответил readyok.")
+            return
+
+        self.is_ready = True
+
+    def _reader_loop(self) -> None:
+        if not self.process or not self.process.stdout:
+            return
+        try:
+            while self._alive.is_set():
+                line = self.process.stdout.readline()
+                if not line:
+                    if self.process.poll() is not None:
+                        self._alive.clear()
+                        break
+                    time.sleep(0.01)
+                    continue
+                line = line.strip()
+                if line:
+                    self._out_queue.put(line)
+        except Exception as e:
+            log_error(f"Reader loop exception: {e}")
+            self._alive.clear()
 
     def _send_command(self, command: str) -> None:
-        if self.process and self.process.stdin:
-            try:
-                self.process.stdin.write(command + "\n")
-                self.process.stdin.flush()
-            except (BrokenPipeError, OSError):
-                log_error("Канал для записи в движок закрыт.")
-                self.process = None
+        if not self.process or not self.process.stdin:
+            return
+        try:
+            self.process.stdin.write(command + "\n")
+            self.process.stdin.flush()
+        except Exception as e:
+            log_error(f"Failed to send command '{command}': {e}")
 
-    def _read_output(self) -> str:
-        if self.process and self.process.stdout:
+    def _collect_until(self, stop_tokens: Optional[List[str]] = None, timeout: float = 2.0) -> List[str]:
+        stop_tokens = stop_tokens or []
+        collected = []
+        end_time = time.time() + timeout
+        while time.time() < end_time:
             try:
-                line = self.process.stdout.readline().strip()
-                return line
-            except (IOError, ValueError):
-                return ""
-        return ""
+                line = self._out_queue.get(timeout=0.05)
+                collected.append(line)
+                for tok in stop_tokens:
+                    if tok in line:
+                        return collected
+            except queue.Empty:
+                continue
+        return collected
+
+    def _wait_for_token(self, token: str, timeout: float = 2.0) -> bool:
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            try:
+                line = self._out_queue.get(timeout=0.05)
+                if token in line:
+                    return True
+            except queue.Empty:
+                continue
+        return False
 
     def set_skill_level(self, level: int) -> None:
-        if not self.process or not self.is_ready:
+        if not self.process:
             return
         level = max(0, min(20, int(level)))
         self.skill_level = level
         self._send_command(f"setoption name Skill Level value {self.skill_level}")
 
     def set_multi_pv(self, num_pvs: int) -> None:
-        if not self.process or not self.is_ready:
+        if not self.process:
             return
         num_pvs = max(1, min(5, int(num_pvs)))
         self._send_command(f"setoption name MultiPV value {num_pvs}")
@@ -85,37 +145,77 @@ class EngineHandler:
     def get_analysis(self, movetime_ms: int = 1000) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         if not self.process or not self.is_ready:
             return [], None
-        self._send_command(f"go movetime {movetime_ms}")
-        lines: List[Dict[str, Any]] = []
-        best_move_uci: Optional[str] = None
-        while True:
-            line = self._read_output()
+
+        self._drain_queue_quick()
+
+        self._send_command(f"go movetime {int(movetime_ms)}")
+
+        parsed_lines: List[Dict[str, Any]] = []
+        best_move: Optional[str] = None
+
+        timeout = max(1.0, movetime_ms / 1000.0 + 1.0)
+        end_time = time.time() + timeout
+
+        score_re = re.compile(r"score (cp|mate) (-?\d+)")
+        multipv_re = re.compile(r"multipv (\d+)")
+        pv_re = re.compile(r"\bpv\b (.+)$")
+
+        while time.time() < end_time:
+            try:
+                line = self._out_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
             if line.startswith("info"):
-                parts = line.split()
                 try:
-                    pv_index = parts.index("multipv") + 1
-                    pv = int(parts[pv_index])
-                    score_cp, score_mate = None, None
-                    if "score" in parts:
-                        score_idx = parts.index("score")
-                        if parts[score_idx + 1] == "cp":
-                            score_cp = int(parts[score_idx + 2])
-                        elif parts[score_idx + 1] == "mate":
-                            score_mate = int(parts[score_idx + 2])
-                    move_uci = None
-                    if "pv" in parts:
-                        move_uci = parts[parts.index("pv") + 1]
-                    lines.append({'pv': pv, 'score_cp': score_cp, 'score_mate': score_mate, 'move_uci': move_uci})
-                except (ValueError, IndexError):
+                    mpv = 1
+                    mv_uci = None
+                    score_cp = None
+                    score_mate = None
+
+                    m_mpv = multipv_re.search(line)
+                    if m_mpv:
+                        mpv = int(m_mpv.group(1))
+
+                    m_score = score_re.search(line)
+                    if m_score:
+                        if m_score.group(1) == "cp":
+                            score_cp = int(m_score.group(2))
+                        else:
+                            score_mate = int(m_score.group(2))
+
+                    m_pv = pv_re.search(line)
+                    if m_pv:
+                        pv_moves = m_pv.group(1).split()
+                        if pv_moves:
+                            mv_uci = pv_moves[0]
+
+                    parsed_lines.append({
+                        'pv': mpv,
+                        'score_cp': score_cp,
+                        'score_mate': score_mate,
+                        'move_uci': mv_uci,
+                        'raw': line
+                    })
+                except Exception:
                     continue
             elif line.startswith("bestmove"):
-                best_move_uci = line.split()[1]
+                parts = line.split()
+                if len(parts) >= 2:
+                    best_move = parts[1]
                 break
-            elif not line and self.process and self.process.poll() is not None:
-                log_error("Процесс движка неожиданно завершился.")
-                return [], None
-        lines.sort(key=lambda x: x['pv'])
-        return lines, best_move_uci
+            else:
+                continue
+
+        parsed_lines.sort(key=lambda x: x.get('pv', 1))
+        parsed_lines = parsed_lines[:5]
+        return parsed_lines, best_move
+
+    def _drain_queue_quick(self) -> None:
+        try:
+            while True:
+                self._out_queue.get_nowait()
+        except queue.Empty:
+            pass
 
     def get_threat(self, fen_string: str, movetime_ms: int = 500) -> Optional[str]:
         if not self.process or not self.is_ready:
@@ -124,24 +224,30 @@ class EngineHandler:
             board = chess.Board(fen_string)
             if board.is_game_over():
                 return None
-            parts = fen_string.split()
-            parts[1] = 'b' if parts[1] == 'w' else 'w'
-            if parts[3] != '-':
-                parts[3] = '-'
-            threat_fen = " ".join(parts)
-            self.set_position_from_fen(threat_fen)
-            _, best_move_uci = self.get_analysis(movetime_ms)
-            return best_move_uci
+
+            self.set_position_from_fen(fen_string)
+            lines, best = self.get_analysis(movetime_ms=movetime_ms)
+            return best
         except Exception as e:
-            log_error(f"Ошибка при анализе угрозы: {e}")
+            log_error(f"Ошибка get_threat: {e}")
             return None
 
     def quit_engine(self) -> None:
-        if self.process:
+        if not self.process:
+            return
+        try:
             self._send_command("quit")
+            time.sleep(0.05)
+            if self.process.poll() is None:
+                self.process.terminate()
+            self._alive.clear()
+            self.process.wait(timeout=1.0)
+        except Exception:
             try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+                if self.process and self.process.poll() is None:
+                    self.process.kill()
+            except Exception:
+                pass
+        finally:
             self.process = None
             self.is_ready = False

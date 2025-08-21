@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox, simpledialog, Toplevel
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 import chess
 import chess.pgn
 import os
@@ -13,31 +13,58 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from typing import Optional, Any, List, Dict
 import random
+import config
 
 from engine_handler import EngineHandler
 
-BOARD_IMG_WIDTH = 600
-BOARD_IMG_HEIGHT = 600
-SQUARE_SIZE = BOARD_IMG_WIDTH // 8
-INFO_PANEL_WIDTH = 450
-EVAL_BAR_HEIGHT = 30
+from config import (
+    BOARD_IMG_WIDTH,
+    BOARD_IMG_HEIGHT,
+    SQUARE_SIZE,
+    INFO_PANEL_WIDTH,
+    EVAL_BAR_HEIGHT,
+    ASSETS_DIR,
+    IMAGE_DIR,
+    PIECE_DIR,
+    SOUND_DIR,
+    PIECE_SYMBOL_TO_FILE,
+    ANIMATION_STEPS,
+    ANIMATION_DELAY,
+    DEFAULT_ENGINE_MOVETIME_MS,
+    DEFAULT_ENGINE_MULTIPV,
+    DEFAULT_ENGINE_SKILL,
+    BOARD_ONLY_HINTS
+)
 
-ASSETS_DIR = "assets"
-IMAGE_DIR = os.path.join(ASSETS_DIR, "images")
-PIECE_DIR = os.path.join(IMAGE_DIR, "pieces")
-SOUND_DIR = os.path.join(ASSETS_DIR, "sounds")
+# ---------- Небольшие утилиты ----------
+def ensure_assets_exist() -> bool:
+    return os.path.isdir(ASSETS_DIR)
 
-PIECE_SYMBOL_TO_FILE = {
-    'P': 'wp.png', 'N': 'wn.png', 'B': 'wb.png', 'R': 'wr.png', 'Q': 'wq.png', 'K': 'wk.png',
-    'p': 'bp.png', 'n': 'bn.png', 'b': 'bb.png', 'r': 'br.png', 'q': 'bq.png', 'k': 'bk.png'
-}
-ANIMATION_STEPS = 10
-ANIMATION_DELAY = 15
+def make_placeholder_piece(symbol: str, size: int = SQUARE_SIZE) -> ImageTk.PhotoImage:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    try:
+        fnt = ImageFont.truetype("DejaVuSans-Bold.ttf", size // 2)
+    except Exception:
+        fnt = ImageFont.load_default()
+    try:
+        bbox = draw.textbbox((0, 0), symbol, font=fnt)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except Exception:
+        try:
+            w, h = fnt.getsize(symbol)
+        except Exception:
+            w, h = size // 2, size // 2
 
+    draw.rectangle([(0, 0), (size, size)], fill=(240, 240, 240, 255))
+    draw.text(((size - w) / 2, (size - h) / 2), symbol, font=fnt, fill="black")
+    return ImageTk.PhotoImage(img)
+
+# ---------- Приложение ----------
 class ChessAnalyzerApp:
     def __init__(self, root: tk.Tk) -> None:
-        self.root: tk.Tk = root
-        self.root.title("ChessAI")
+        self.root = root
+        self.root.title("ChessAI — улучшенная версия")
         self.root.minsize(BOARD_IMG_WIDTH + 20, BOARD_IMG_HEIGHT + 120)
 
         self.piece_images: Dict[str, ImageTk.PhotoImage] = {}
@@ -45,8 +72,8 @@ class ChessAnalyzerApp:
         self.board_state: chess.Board = chess.Board()
         self.board_orientation_white_pov: bool = True
 
-        self.is_animating: bool = False
-        self.is_dragging: bool = False
+        self.is_animating = False
+        self.is_dragging = False
         self.drag_from_square: Optional[int] = None
         self.drag_image_id: Optional[int] = None
 
@@ -55,20 +82,26 @@ class ChessAnalyzerApp:
         self.user_color: Optional[bool] = None
         self.evaluation_history: List[float] = []
 
-        self.init_sound()
-        self.engine_skill_var = tk.IntVar(value=20)
-        self.engine_multipv_var = tk.IntVar(value=3)
-        self.engine_time_var = tk.IntVar(value=1200)
+        self.engine_skill_var = tk.IntVar(value=DEFAULT_ENGINE_SKILL)
+        self.engine_multipv_var = tk.IntVar(value=DEFAULT_ENGINE_MULTIPV)
+        self.engine_time_var = tk.IntVar(value=DEFAULT_ENGINE_MOVETIME_MS)
 
-        self.engine: EngineHandler = EngineHandler(initial_skill_level=self.engine_skill_var.get())
+        self.board_only_mode = False
+        self.hints_overlay_id = None
+
+        self.init_sound()
+
+        self.engine = EngineHandler(initial_skill_level=self.engine_skill_var.get())
         if not self.engine.process:
-            messagebox.showwarning("Ошибка движка", f"Stockfish не найден. Анализ недоступен.")
+            messagebox.showwarning("Ошибка движка", "Stockfish не найден. Анализ будет недоступен.")
 
         self.analysis_queue: queue.Queue = queue.Queue()
         self.threat_move_obj: Optional[chess.Move] = None
 
         self.load_assets()
+
         self.create_widgets()
+        self.bind_shortcuts()
 
         self.board_canvas.bind("<ButtonPress-1>", self.on_mouse_down)
         self.board_canvas.bind("<B1-Motion>", self.on_mouse_drag)
@@ -84,56 +117,63 @@ class ChessAnalyzerApp:
 
         self.prompt_color_and_start()
 
-
     def init_sound(self) -> None:
         try:
             pygame.mixer.init()
-            self.move_sound = pygame.mixer.Sound(os.path.join(SOUND_DIR, "move.wav"))
-            self.capture_sound = pygame.mixer.Sound(os.path.join(SOUND_DIR, "capture.wav"))
+            self.move_sound = pygame.mixer.Sound(os.path.join(SOUND_DIR, "move.wav")) if os.path.exists(os.path.join(SOUND_DIR, "move.wav")) else None
+            self.capture_sound = pygame.mixer.Sound(os.path.join(SOUND_DIR, "capture.wav")) if os.path.exists(os.path.join(SOUND_DIR, "capture.wav")) else None
             self.sound_enabled = True
         except Exception as e:
             self.sound_enabled = False
-            print(f"Ошибка инициализации звука: {e}")
+            print(f"Sound init error: {e}")
 
     def load_assets(self) -> None:
         try:
             board_img_path = os.path.join(IMAGE_DIR, "board.png")
-            pil_board_image = Image.open(board_img_path).resize((BOARD_IMG_WIDTH, BOARD_IMG_HEIGHT), Image.LANCZOS)
-            self.board_bg_image = ImageTk.PhotoImage(pil_board_image)
+            if os.path.exists(board_img_path):
+                pil_board_image = Image.open(board_img_path).resize((BOARD_IMG_WIDTH, BOARD_IMG_HEIGHT), Image.LANCZOS)
+                self.board_bg_image = ImageTk.PhotoImage(pil_board_image)
+            else:
+                self.board_bg_image = None
+        except Exception:
+            self.board_bg_image = None
 
-            for symbol, filename in PIECE_SYMBOL_TO_FILE.items():
-                color_folder = "white" if symbol.isupper() else "black"
-                path = os.path.join(PIECE_DIR, color_folder, filename)
-                img = Image.open(path).resize((SQUARE_SIZE, SQUARE_SIZE), Image.LANCZOS)
-                self.piece_images[symbol] = ImageTk.PhotoImage(img)
-        except Exception as e:
-            messagebox.showerror("Ошибка загрузки ресурсов", f"Критическая ошибка: {e}")
-            self.on_closing()
-
+        for sym in list("PNBRQKpnbrqk"):
+            self.piece_images[sym] = None
+        for symbol, filename in PIECE_SYMBOL_TO_FILE.items():
+            color_folder = "white" if symbol.isupper() else "black"
+            path = os.path.join(PIECE_DIR, color_folder, filename)
+            if os.path.exists(path):
+                try:
+                    img = Image.open(path).resize((SQUARE_SIZE, SQUARE_SIZE), Image.LANCZOS)
+                    self.piece_images[symbol] = ImageTk.PhotoImage(img)
+                except Exception:
+                    self.piece_images[symbol] = make_placeholder_piece(symbol.upper() if symbol.isupper() else symbol.lower())
+            else:
+                self.piece_images[symbol] = make_placeholder_piece(symbol.upper() if symbol.isupper() else symbol.lower())
 
     def create_widgets(self) -> None:
-        self.main_frame = ttk.Frame(self.root, padding=10)
+        self.main_frame = ttk.Frame(self.root, padding=8)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
         left_frame = ttk.Frame(self.main_frame)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
-        self.board_canvas = tk.Canvas(left_frame, width=BOARD_IMG_WIDTH, height=BOARD_IMG_HEIGHT)
+        self.board_canvas = tk.Canvas(left_frame, width=BOARD_IMG_WIDTH, height=BOARD_IMG_HEIGHT, bg="grey20", highlightthickness=0)
         self.board_canvas.pack()
-        if hasattr(self, 'board_bg_image'):
+        if hasattr(self, 'board_bg_image') and self.board_bg_image:
             self.board_canvas.create_image(0, 0, anchor=tk.NW, image=self.board_bg_image)
 
         self.create_board_controls(left_frame)
 
         self.info_panel = ttk.Frame(self.main_frame, width=INFO_PANEL_WIDTH)
-        self.info_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.info_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False)
         self.info_panel.pack_propagate(False)
-
         self.create_info_panel_widgets()
 
     def create_board_controls(self, parent):
         pgn_controls_frame = ttk.Frame(parent)
-        pgn_controls_frame.pack(fill=tk.X, pady=5)
+        pgn_controls_frame.pack(fill=tk.X, pady=6)
 
         self.menu_bar = tk.Menu(self.root)
         self.root.config(menu=self.menu_bar)
@@ -150,24 +190,25 @@ class ChessAnalyzerApp:
         game_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Игра", menu=game_menu)
         game_menu.add_command(label="Новая игра с движком", command=self.start_new_game_vs_engine)
+        game_menu.add_command(label="Режим: Только доска (Space)", command=self.toggle_board_only)
 
         self.prev_move_button = ttk.Button(pgn_controls_frame, text="<", command=self.prev_move_action, state=tk.DISABLED)
         self.prev_move_button.pack(side=tk.LEFT, padx=2)
         self.next_move_button = ttk.Button(pgn_controls_frame, text=">", command=self.next_move_action, state=tk.DISABLED)
         self.next_move_button.pack(side=tk.LEFT, padx=2)
-        self.flip_board_button = ttk.Button(pgn_controls_frame, text="Перевернуть", command=self.flip_board)
-        self.flip_board_button.pack(side=tk.LEFT, padx=5)
+        self.flip_board_button = ttk.Button(pgn_controls_frame, text="Перевернуть (F)", command=self.flip_board)
+        self.flip_board_button.pack(side=tk.LEFT, padx=6)
         self.copy_fen_button = ttk.Button(pgn_controls_frame, text="Копировать FEN", command=self.export_fen_to_clipboard)
-        self.copy_fen_button.pack(side=tk.LEFT, padx=5)
+        self.copy_fen_button.pack(side=tk.LEFT, padx=6)
 
-        self.eval_bar_canvas = tk.Canvas(parent, height=EVAL_BAR_HEIGHT, bg="dim gray")
-        self.eval_bar_canvas.pack(fill=tk.X, pady=(5, 0))
+        self.eval_bar_canvas = tk.Canvas(parent, height=EVAL_BAR_HEIGHT, bg="dim gray", highlightthickness=0)
+        self.eval_bar_canvas.pack(fill=tk.X, pady=(6, 0))
         self.eval_line = self.eval_bar_canvas.create_rectangle(0, 0, BOARD_IMG_WIDTH / 2, EVAL_BAR_HEIGHT, fill="white", outline="")
         self.eval_text = self.eval_bar_canvas.create_text(BOARD_IMG_WIDTH / 2, EVAL_BAR_HEIGHT / 2, text="0.0", fill="black", font=("Arial", 10, "bold"))
 
     def create_info_panel_widgets(self):
         self.notebook = ttk.Notebook(self.info_panel)
-        self.notebook.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=6)
 
         analysis_tab = ttk.Frame(self.notebook)
         self.notebook.add(analysis_tab, text="Анализ")
@@ -179,10 +220,10 @@ class ChessAnalyzerApp:
 
     def create_analysis_tab(self, parent):
         self.game_info_label = ttk.Label(parent, text="Партия не загружена", wraplength=INFO_PANEL_WIDTH - 20, justify=tk.LEFT)
-        self.game_info_label.pack(anchor=tk.NW, pady=5, fill=tk.X, padx=5)
+        self.game_info_label.pack(anchor=tk.NW, pady=6, fill=tk.X, padx=6)
 
         moves_frame = ttk.Frame(parent)
-        moves_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=5)
+        moves_frame.pack(fill=tk.BOTH, expand=True, pady=6, padx=6)
         self.moves_scrollbar = ttk.Scrollbar(moves_frame, orient=tk.VERTICAL)
         self.moves_listbox = tk.Listbox(moves_frame, yscrollcommand=self.moves_scrollbar.set, exportselection=False, font=("Courier", 10))
         self.moves_scrollbar.config(command=self.moves_listbox.yview)
@@ -192,52 +233,51 @@ class ChessAnalyzerApp:
         self.moves_listbox.bind('<Button-3>', self.show_annotation_menu)
 
         analysis_buttons_frame = ttk.Frame(parent)
-        analysis_buttons_frame.pack(fill=tk.X, padx=5, pady=5)
+        analysis_buttons_frame.pack(fill=tk.X, padx=6, pady=6)
         self.analyze_game_button = ttk.Button(analysis_buttons_frame, text="Анализировать партию", command=self.start_full_game_analysis)
         self.analyze_game_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
-        self.threat_button = ttk.Button(analysis_buttons_frame, text="Показать угрозу", command=self.show_threat)
+        self.threat_button = ttk.Button(analysis_buttons_frame, text="Показать угрозу (T)", command=self.show_threat)
         self.threat_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
-        engine_settings_frame = ttk.LabelFrame(parent, text="Настройки движка", padding=5)
-        engine_settings_frame.pack(fill=tk.X, padx=5, pady=5)
+        engine_settings_frame = ttk.LabelFrame(parent, text="Настройки движка", padding=6)
+        engine_settings_frame.pack(fill=tk.X, padx=6, pady=6)
 
         skill_frame = ttk.Frame(engine_settings_frame)
         skill_frame.pack(fill=tk.X)
         ttk.Label(skill_frame, text="Сила (0-20):").pack(side=tk.LEFT)
         self.skill_scale = ttk.Scale(skill_frame, from_=0, to=20, orient=tk.HORIZONTAL, variable=self.engine_skill_var, command=self.update_engine_skill)
-        self.skill_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.skill_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
         ttk.Label(skill_frame, textvariable=self.engine_skill_var, width=2).pack(side=tk.LEFT)
 
         multipv_frame = ttk.Frame(engine_settings_frame)
-        multipv_frame.pack(fill=tk.X, pady=(5, 0))
+        multipv_frame.pack(fill=tk.X, pady=(6, 0))
         ttk.Label(multipv_frame, text="Количество строк (1-5):").pack(side=tk.LEFT)
         self.multipv_spinbox = ttk.Spinbox(multipv_frame, from_=1, to=5, textvariable=self.engine_multipv_var, width=3, command=self.update_engine_multipv)
-        self.multipv_spinbox.pack(side=tk.LEFT, padx=5)
+        self.multipv_spinbox.pack(side=tk.LEFT, padx=6)
 
         time_frame = ttk.Frame(engine_settings_frame)
-        time_frame.pack(fill=tk.X, pady=(5, 0))
-        ttk.Label(time_frame, text="Макс. время (мс):").pack(side=tk.LEFT)
+        time_frame.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(time_frame, text="Время (мс):").pack(side=tk.LEFT)
         self.time_spinbox = ttk.Spinbox(time_frame, from_=200, to=10000, increment=100, textvariable=self.engine_time_var, width=8)
-        self.time_spinbox.pack(side=tk.LEFT, padx=5)
+        self.time_spinbox.pack(side=tk.LEFT, padx=6)
 
-        eval_frame = ttk.LabelFrame(parent, text="Оценка движка", padding=5)
-        eval_frame.pack(fill=tk.X, padx=5, pady=5)
-
+        eval_frame = ttk.LabelFrame(parent, text="Лучшие ходы", padding=6)
+        eval_frame.pack(fill=tk.X, padx=6, pady=6)
         columns = ('#1', '#2', '#3')
         self.eval_tree = ttk.Treeview(eval_frame, columns=columns, show='headings', height=4)
         self.eval_tree.heading('#1', text='№')
         self.eval_tree.column('#1', width=30, anchor='center')
         self.eval_tree.heading('#2', text='Ход')
-        self.eval_tree.column('#2', width=100, anchor='w')
+        self.eval_tree.column('#2', width=120, anchor='w')
         self.eval_tree.heading('#3', text='Оценка')
-        self.eval_tree.column('#3', width=80, anchor='w')
+        self.eval_tree.column('#3', width=90, anchor='w')
         self.eval_tree.pack(fill=tk.X, expand=True)
 
         self.game_status_label = ttk.Label(parent, text="", font=("Arial", 10, "bold"), foreground="blue")
-        self.game_status_label.pack(anchor=tk.NW, fill=tk.X, pady=5, padx=5)
+        self.game_status_label.pack(anchor=tk.NW, fill=tk.X, pady=6, padx=6)
 
     def create_graph_tab(self, parent):
-        self.fig = Figure(figsize=(5, 4), dpi=100)
+        self.fig = Figure(figsize=(4, 3), dpi=100)
         self.ax = self.fig.add_subplot(111)
         self.ax.set_title("Оценка партии")
         self.ax.set_xlabel("Номер хода")
@@ -250,14 +290,24 @@ class ChessAnalyzerApp:
         self.graph_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.update_evaluation_graph()
 
+    def bind_shortcuts(self):
+        self.root.bind("<space>", lambda e: self.toggle_board_only())
+        self.root.bind("<Left>", lambda e: self.prev_move_action())
+        self.root.bind("<Right>", lambda e: self.next_move_action())
+        self.root.bind("f", lambda e: self.flip_board())
+        self.root.bind("F", lambda e: self.flip_board())
+        self.root.bind("a", lambda e: self.request_analysis_current_pos())
+        self.root.bind("A", lambda e: self.request_analysis_current_pos())
+        self.root.bind("t", lambda e: self.show_threat())
+        self.root.bind("T", lambda e: self.show_threat())
+        self.root.bind("h", lambda e: self.show_help_dialog())
 
     def prompt_color_and_start(self) -> None:
-        """Диалог старта: Белые / Черные / Рандом / Только анализ."""
         win = Toplevel(self.root)
         win.title("Новая игра")
         win.transient(self.root)
         win.grab_set()
-        ttk.Label(win, text="Выберите сторону:").pack(padx=12, pady=(12, 6))
+        ttk.Label(win, text="Выберите режим:").pack(padx=12, pady=(12, 6))
 
         choice = tk.StringVar(value="random")
         for text, val in (("Белыми", "white"), ("Черными", "black"), ("Случайно", "random"), ("Только анализ", "analysis")):
@@ -288,13 +338,12 @@ class ChessAnalyzerApp:
         if self.board_state.turn != self.user_color:
             self.root.after(500, self.make_engine_move)
 
-
+    # ------------------ Отрисовка ------------------
     def update_board_display(self, move_to_animate: Optional[chess.Move] = None, captured: bool = False,
                              is_reverse_animation: bool = False, animated_piece_symbol: Optional[str] = None) -> None:
-
         if self.is_animating:
             return
-        self.board_canvas.delete("piece", "arrow", "threat_arrow")
+        self.board_canvas.delete("piece", "arrow", "threat_arrow", "hint_overlay")
         self.clear_highlighted_squares()
         self.threat_move_obj = None
 
@@ -304,6 +353,8 @@ class ChessAnalyzerApp:
         else:
             self._draw_all_pieces()
             self._draw_move_arrows()
+            if self.board_only_mode:
+                self._draw_board_hints()
 
     def _draw_all_pieces(self) -> None:
         self.board_canvas.delete("piece")
@@ -313,10 +364,12 @@ class ChessAnalyzerApp:
             piece = self.board_state.piece_at(sq_idx)
             if piece:
                 symbol = piece.symbol()
-                if symbol in self.piece_images:
-                    x, y = self.get_square_coords(sq_idx)
-                    self.board_canvas.create_image(x, y, anchor=tk.NW, image=self.piece_images[symbol],
-                                                   tags=("piece", f"piece_at_{sq_idx}"))
+                img = self.piece_images.get(symbol)
+                x, y = self.get_square_coords(sq_idx)
+                if img:
+                    self.board_canvas.create_image(x, y, anchor=tk.NW, image=img, tags=("piece", f"piece_at_{sq_idx}"))
+                else:
+                    self.board_canvas.create_text(x + SQUARE_SIZE/2, y + SQUARE_SIZE/2, text=symbol, font=("Arial", 18), tags=("piece", f"piece_at_{sq_idx}"))
 
     def _draw_move_arrows(self) -> None:
         self.board_canvas.delete("arrow")
@@ -326,14 +379,29 @@ class ChessAnalyzerApp:
 
         best_moves = self.get_best_moves_from_treeview()
         if best_moves:
-            self.draw_arrow(best_moves[0].from_square, best_moves[0].to_square, color="#228B22", width=4, tag="best_move_arrow")
+            try:
+                self.draw_arrow(best_moves[0].from_square, best_moves[0].to_square, color="#228B22", width=4, tag="best_move_arrow")
+            except Exception:
+                pass
             for i, move in enumerate(best_moves[1:], start=1):
-                self.draw_arrow(move.from_square, move.to_square, color="#FFA500", width=2, tag=f"alt_move_arrow_{i}")
+                try:
+                    self.draw_arrow(move.from_square, move.to_square, color="#FFA500", width=2, tag=f"alt_move_arrow_{i}")
+                except Exception:
+                    pass
 
         if self.threat_move_obj:
             self.draw_arrow(self.threat_move_obj.from_square, self.threat_move_obj.to_square, color="#FF0000", width=4, tag="threat_arrow")
 
+    def _draw_board_hints(self):
+        w = 220
+        h = len(BOARD_ONLY_HINTS) * 16 + 12
+        x = BOARD_IMG_WIDTH - w - 8
+        y = BOARD_IMG_HEIGHT - h - 8
+        self.board_canvas.create_rectangle(x, y, x + w, y + h, fill="#111111", outline="#444444", width=1, stipple="gray25", tags="hint_overlay")
+        for i, line in enumerate(BOARD_ONLY_HINTS):
+            self.board_canvas.create_text(x + 8, y + 8 + i * 16, anchor="nw", text=line, font=("Arial", 9), fill="white", tags="hint_overlay")
 
+    # ------------------ Логика загрузки/анализ ------------------
     def update_info_panel(self) -> None:
         self.clear_evaluation_display()
         self.game_status_label.config(text="")
@@ -349,7 +417,7 @@ class ChessAnalyzerApp:
             self.populate_moves_listbox()
             self.check_game_status()
 
-            if not self.board_state.is_game_over() and self.game_mode == "analysis":
+            if not self.board_state.is_game_over() and self.game_mode == "analysis" and self.engine and self.engine.process:
                 self.request_analysis_current_pos()
             else:
                 self.update_eval_bar(None, None)
@@ -377,14 +445,12 @@ class ChessAnalyzerApp:
             else:
                 display_text = f"{board_for_san.fullmove_number}... {san_move}"
 
-            nag_symbols = {1: '!', 2: '?', 3: '!!', 4: '??', 5: '!?', 6: '?!'}
-            nags = "".join([nag_symbols.get(nag, '') for nag in node.nags])
+            nags = "".join([{1: '!', 2: '?', 3: '!!', 4: '??', 5: '!?', 6: '?!'}.get(nag, '') for nag in node.nags])
             if nags:
                 display_text += f" {nags}"
 
-            if "Зевок" in node.comment: display_text += " ??"
-            elif "Ошибка" in node.comment: display_text += " ?"
-            elif "Неточность" in node.comment: display_text += " ?!"
+            if node.comment:
+                display_text += f" ({node.comment[:40]})" if len(node.comment) > 40 else f" ({node.comment})"
 
             self.moves_listbox.insert(tk.END, display_text)
             self.move_nodes_in_listbox.append(node)
@@ -407,7 +473,7 @@ class ChessAnalyzerApp:
 
         if self.evaluation_history:
             plies = range(len(self.evaluation_history))
-            self.ax.plot(plies, self.evaluation_history, marker='o', linestyle='-', markersize=4)
+            self.ax.plot(plies, self.evaluation_history, marker='o', linestyle='-')
             self.ax.axhline(0, color='black', linewidth=0.8, linestyle='--')
 
             max_abs_eval = max(abs(e) for e in self.evaluation_history) if self.evaluation_history else 100
@@ -419,7 +485,6 @@ class ChessAnalyzerApp:
 
         self.fig.tight_layout()
         self.graph_canvas.draw()
-
 
     def load_pgn(self) -> None:
         filepath = filedialog.askopenfilename(title="Открыть PGN", filetypes=(("PGN files", "*.pgn"), ("All files", "*.*")))
@@ -451,7 +516,7 @@ class ChessAnalyzerApp:
         except Exception as e:
             messagebox.showerror("Ошибка загрузки PGN", f"Произошла ошибка: {e}")
 
-    def show_pgn_selection_window(self, pgn_text: str, games: List[tuple[dict, int]]) -> None:
+    def show_pgn_selection_window(self, pgn_text: str, games: List[tuple]) -> None:
         win = Toplevel(self.root)
         win.title("Выберите партию")
 
@@ -548,7 +613,6 @@ class ChessAnalyzerApp:
         self.root.clipboard_append(fen)
         messagebox.showinfo("FEN Скопирован", "Текущий FEN скопирован в буфер обмена.")
 
-
     def reset_to_new_game(self, game_node: chess.pgn.GameNode, preserve_orientation: bool = True) -> None:
         self.current_game_node = game_node
         self.board_state = game_node.board()
@@ -568,6 +632,7 @@ class ChessAnalyzerApp:
     def start_new_game_vs_engine(self) -> None:
         self.prompt_color_and_start()
 
+    # ------------------ Ходы (user / engine) ------------------
     def make_user_move(self, move: chess.Move) -> None:
         if not self.board_state.is_legal(move):
             return
@@ -593,13 +658,16 @@ class ChessAnalyzerApp:
             self.root.after(500, self.make_engine_move)
 
     def make_engine_move(self) -> None:
-        if self.is_animating or self.board_state.is_game_over():
+        if self.is_animating or self.board_state.is_game_over() or not self.engine or not self.engine.process:
             return
 
         def find_and_make_move():
             _, best_move_uci = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
             if best_move_uci:
-                move = chess.Move.from_uci(best_move_uci)
+                try:
+                    move = chess.Move.from_uci(best_move_uci)
+                except Exception:
+                    return
                 if self.board_state.is_legal(move):
                     self.root.after(0, lambda: self.make_user_move(move))
 
@@ -608,22 +676,26 @@ class ChessAnalyzerApp:
     def check_puzzle_move(self, user_move: chess.Move) -> None:
         def check_in_thread():
             _, best_move_uci = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
-            best_move = chess.Move.from_uci(best_move_uci)
+            try:
+                best_move = chess.Move.from_uci(best_move_uci)
+            except Exception:
+                best_move = None
 
             def show_result():
-                if user_move == best_move:
+                if best_move and user_move == best_move:
                     messagebox.showinfo("Правильно!", f"Отличный ход! {self.board_state.san(user_move)}")
                     self.make_user_move(user_move)
                 else:
-                    messagebox.showwarning("Неверно", f"Неправильный ход. Лучшим ходом был {self.board_state.san(best_move)}.")
+                    bm = self.board_state.san(best_move) if best_move else "N/A"
+                    messagebox.showwarning("Неверно", f"Неправильный ход. Лучшим ходом был {bm}.")
 
             self.root.after(0, show_result)
 
         threading.Thread(target=check_in_thread, daemon=True).start()
 
-
+    # ------------------ Полный анализ партии ------------------
     def start_full_game_analysis(self) -> None:
-        if not self.current_game_node or not self.current_game_node.game().mainline():
+        if not self.current_game_node or not list(self.current_game_node.game().mainline()):
             messagebox.showwarning("Нет партии", "Загрузите партию с ходами для анализа.")
             return
 
@@ -648,19 +720,22 @@ class ChessAnalyzerApp:
 
         for i, node in enumerate(nodes):
             fen_before = board.fen()
-            self.engine.set_position_from_fen(fen_before)
-            analysis_before, _ = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
+            if self.engine and self.engine.process:
+                self.engine.set_position_from_fen(fen_before)
+                analysis_before, _ = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
+            else:
+                analysis_before = []
 
             if analysis_before and analysis_before[0].get('move_uci'):
                 score_obj = analysis_before[0]
-                score_cp = score_obj['score_cp']
+                score_cp = score_obj.get('score_cp')
 
                 best_move_san = "N/A"
                 try:
-                    engine_move = chess.Move.from_uci(score_obj['move_uci'])
+                    engine_move = chess.Move.from_uci(score_obj.get('move_uci'))
                     if board.is_legal(engine_move):
                         best_move_san = board.san(engine_move)
-                except (ValueError, TypeError):
+                except Exception:
                     pass
 
                 board.push(node.move)
@@ -670,8 +745,11 @@ class ChessAnalyzerApp:
                     self.evaluation_history.append(current_player_score)
 
                     fen_after = board.fen()
-                    self.engine.set_position_from_fen(fen_after)
-                    analysis_after, _ = self.engine.get_analysis(movetime_ms=max(200, self.engine_time_var.get() // 4))
+                    if self.engine and self.engine.process:
+                        self.engine.set_position_from_fen(fen_after)
+                        analysis_after, _ = self.engine.get_analysis(movetime_ms=max(200, self.engine_time_var.get() // 4))
+                    else:
+                        analysis_after = []
 
                     if analysis_after and analysis_after[0].get('score_cp') is not None:
                         score_after_cp = analysis_after[0]['score_cp']
@@ -708,17 +786,19 @@ class ChessAnalyzerApp:
             return
 
         def get_threat_in_thread():
+            if not self.engine or not self.engine.process:
+                return
             threat_uci = self.engine.get_threat(self.board_state.fen())
             if threat_uci:
                 try:
-                    self.threat_move_obj = self.board_state.parse_uci(threat_uci)
+                    m = self.board_state.parse_uci(threat_uci)
+                    self.threat_move_obj = m
                     self.root.after(0, self._draw_move_arrows)
-                except ValueError:
+                except Exception:
                     self.threat_move_obj = None
-
         threading.Thread(target=get_threat_in_thread, daemon=True).start()
 
-
+    # ------------------ Взаимодействие с мышью ------------------
     def on_mouse_move(self, event: tk.Event) -> None:
         if self.is_animating:
             return
@@ -820,7 +900,7 @@ class ChessAnalyzerApp:
                 self.selected_square_for_move = clicked_square
                 self.highlight_legal_moves(clicked_square)
 
-
+    # ------------------ Перемотки / анимации ------------------
     def next_move_action(self) -> None:
         if self.current_game_node and self.current_game_node.variations:
             target_node = self.current_game_node.variation(0)
@@ -886,9 +966,9 @@ class ChessAnalyzerApp:
         node.comment = ""
         self.populate_moves_listbox()
 
-
+    # ------------------ Анализ текущей позиции ------------------
     def request_analysis_current_pos(self) -> None:
-        if self.is_animating or not self.engine.process or self.board_state.is_game_over():
+        if self.is_animating or not self.engine or not self.engine.process or self.board_state.is_game_over():
             return
 
         self.clear_evaluation_display()
@@ -896,9 +976,12 @@ class ChessAnalyzerApp:
         threading.Thread(target=self._run_engine_analysis, args=(current_fen,), daemon=True).start()
 
     def _run_engine_analysis(self, fen_string: str) -> None:
-        self.engine.set_position_from_fen(fen_string)
-        analysis_lines, _ = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
-        self.analysis_queue.put((analysis_lines, fen_string))
+        try:
+            self.engine.set_position_from_fen(fen_string)
+            analysis_lines, _ = self.engine.get_analysis(movetime_ms=self.engine_time_var.get())
+            self.analysis_queue.put((analysis_lines, fen_string))
+        except Exception as e:
+            print("Engine analysis error:", e)
 
     def process_analysis_queue(self) -> None:
         try:
@@ -921,19 +1004,19 @@ class ChessAnalyzerApp:
                         move_san = self.board_state.san(move)
 
                         eval_text = ""
-                        if line['score_mate'] is not None:
+                        if line.get('score_mate') is not None:
                             mate_val = line['score_mate'] if self.board_state.turn == chess.WHITE else -line['score_mate']
                             eval_text = f"Мат в {abs(line['score_mate'])}"
-                        elif line['score_cp'] is not None:
+                        elif line.get('score_cp') is not None:
                             cp_val = line['score_cp'] if self.board_state.turn == chess.WHITE else -line['score_cp']
                             eval_text = f"{cp_val / 100.0:+.2f}"
 
                         self.eval_tree.insert('', 'end', values=(line['pv'], move_san, eval_text))
-                    except (ValueError, IndexError):
+                    except Exception:
                         continue
 
                 first_line = analysis_lines[0]
-                self.update_eval_bar(first_line['score_cp'], first_line['score_mate'])
+                self.update_eval_bar(first_line.get('score_cp'), first_line.get('score_mate'))
                 self._draw_move_arrows()
 
         except queue.Empty:
@@ -941,7 +1024,7 @@ class ChessAnalyzerApp:
         finally:
             self.root.after(100, self.process_analysis_queue)
 
-
+    # ------------------ Координаты ------------------
     def get_square_coords(self, square_index: int) -> tuple[int, int]:
         file = chess.square_file(square_index)
         rank = chess.square_rank(square_index)
@@ -952,14 +1035,19 @@ class ChessAnalyzerApp:
         return x, y
 
     def get_square_from_coords(self, x: int, y: int) -> Optional[int]:
+        if x < 0 or y < 0 or x >= BOARD_IMG_WIDTH or y >= BOARD_IMG_HEIGHT:
+            return None
         file = int(x // SQUARE_SIZE)
         rank = int(y // SQUARE_SIZE)
         if self.board_orientation_white_pov:
             file, rank = file, 7 - rank
         else:
             file, rank = 7 - file, rank
-        return chess.square(file, rank) if 0 <= file <= 7 and 0 <= rank <= 7 else None
+        if 0 <= file <= 7 and 0 <= rank <= 7:
+            return chess.square(file, rank)
+        return None
 
+    # ------------------ Установка активного узла и анимация ------------------
     def _set_active_node(self, target_node: Optional[chess.pgn.GameNode], is_forward_move: Optional[bool] = None,
                          move_to_animate: Optional[chess.Move] = None, captured: bool = False,
                          animated_piece_symbol: Optional[str] = None) -> None:
@@ -1015,7 +1103,7 @@ class ChessAnalyzerApp:
         self.update_navigation_buttons()
 
     def play_sound(self, captured: bool) -> None:
-        if not self.sound_enabled: return
+        if not getattr(self, "sound_enabled", False): return
         try:
             sound = self.capture_sound if captured else self.move_sound
             if sound: sound.play()
@@ -1045,6 +1133,7 @@ class ChessAnalyzerApp:
         self.selected_square_for_move = None
         self.update_board_display()
 
+    # ------------------ Подсветки ------------------
     def highlight_legal_moves(self, from_square: int) -> None:
         self.clear_highlighted_squares()
         x, y = self.get_square_coords(from_square)
@@ -1073,7 +1162,7 @@ class ChessAnalyzerApp:
             move_san = self.eval_tree.item(item, 'values')[1]
             try:
                 moves.append(self.board_state.parse_san(move_san))
-            except (ValueError, IndexError):
+            except Exception:
                 continue
         return moves
 
@@ -1088,7 +1177,6 @@ class ChessAnalyzerApp:
                 return chess.piece_symbol(move.promotion).upper() if self.board_state.turn == chess.WHITE else chess.piece_symbol(move.promotion).lower()
 
             piece = self.board_state.piece_at(move.from_square)
-
             if piece: return piece.symbol()
         return None
 
@@ -1100,7 +1188,7 @@ class ChessAnalyzerApp:
                (chess.square_rank(to_sq) == 0 and piece.color == chess.BLACK):
                 promo = simpledialog.askstring("Превращение", "В какую фигуру (q, r, b, n)?", initialvalue="q")
                 if promo and promo.lower() in "qrbn":
-                    move.promotion = chess.PIECE_SYMBOLS.index(promo.lower())
+                    move.promotion = {"q": chess.QUEEN, "r": chess.ROOK, "b": chess.BISHOP, "n": chess.KNIGHT}[promo.lower()]
                 else:
                     return None
         return move
@@ -1149,6 +1237,38 @@ class ChessAnalyzerApp:
             self.engine.set_multi_pv(self.engine_multipv_var.get())
             self.request_analysis_current_pos()
 
+    # ------------------ Режим "только доска" ------------------
+    def toggle_board_only(self) -> None:
+        self.board_only_mode = not self.board_only_mode
+        if self.board_only_mode:
+            self.info_panel.forget()
+            try:
+                self.menu_bar.entryconfig("Файл", state="disabled")
+            except Exception:
+                pass
+            self._draw_board_hints()
+        else:
+            self.info_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False)
+            try:
+                self.menu_bar.entryconfig("Файл", state="normal")
+            except Exception:
+                pass
+            self.board_canvas.delete("hint_overlay")
+        self.update_board_display()
+
+    # ------------------ Помощь ------------------
+    def show_help_dialog(self):
+        txt = "\n".join([
+            "Горячие клавиши:",
+            "Space — режим только доски (toggle)",
+            "← / → — перемотка ходов",
+            "F — перевернуть доску",
+            "A — анализ текущей позиции",
+            "T — показать угрозу"
+        ])
+        messagebox.showinfo("Помощь", txt)
+
+    # ------------------ Закрытие ------------------
     def on_closing(self) -> None:
         self.is_animating = False
         if self.engine and self.engine.process:
@@ -1158,9 +1278,8 @@ class ChessAnalyzerApp:
         self.root.destroy()
 
 if __name__ == "__main__":
-    if not os.path.exists(ASSETS_DIR):
-        messagebox.showerror("Критическая ошибка", f"Директория с ресурсами '{ASSETS_DIR}' не найдена.")
-    else:
-        root = tk.Tk()
-        app = ChessAnalyzerApp(root)
-        root.mainloop()
+    root = tk.Tk()
+    if not ensure_assets_exist():
+        messagebox.showwarning("Внимание", f"Директория ассетов '{ASSETS_DIR}' не найдена. Некоторые ресурсы будут заменены заглушками.")
+    app = ChessAnalyzerApp(root)
+    root.mainloop()
