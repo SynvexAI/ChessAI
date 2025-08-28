@@ -1283,3 +1283,4 @@ if __name__ == "__main__":
         messagebox.showwarning("Внимание", f"Директория ассетов '{ASSETS_DIR}' не найдена. Некоторые ресурсы будут заменены заглушками.")
     app = ChessAnalyzerApp(root)
     root.mainloop()
+
